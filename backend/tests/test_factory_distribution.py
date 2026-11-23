@@ -1,5 +1,5 @@
 """Publication-ledger invariants. Three-track routing is covered by test_factory_three_tracks."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database import Base
-from models.factory import FactoryItem, FactoryPublication, FactoryRun
+from models.factory import FactoryItem, FactoryPublication, FactoryRelease, FactoryRun, FactoryWorkOrder
 from services import factory_distribution as distribution
 
 DAY = '2026-11-11'
@@ -17,7 +17,8 @@ NOW = datetime(2026, 11, 11, 4, tzinfo=timezone.utc)
 @pytest.fixture
 def db(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'distribution.db'}")
-    Base.metadata.create_all(engine, tables=[FactoryRun.__table__, FactoryItem.__table__, FactoryPublication.__table__])
+    Base.metadata.create_all(engine, tables=[FactoryRun.__table__, FactoryItem.__table__, FactoryPublication.__table__,
+                                             FactoryRelease.__table__, FactoryWorkOrder.__table__])
     with sessionmaker(bind=engine)() as session:
         yield session
         session.rollback()
@@ -88,6 +89,38 @@ def test_legacy_publish_jobs_reduce_assignment_capacity(db):
     for item in items: item.brief={**item.brief,'editor_id':'producer'}
     assigned = distribution.assign_distribution(db, run.id, DAY)
     assert all(r['platform'] != 'douyin' for r in assigned.values())
+
+
+def test_makeup_slots_raise_cap_only_for_named_runs_on_the_authorized_day(db):
+    when = NOW.replace(tzinfo=None)
+    old_run, old_items = run_items(db, ['原任务'] * 4, policy=False)
+    for item in old_items:
+        job(db, item, status='submitted')
+    run, (item,) = run_items(db, ['补发'])
+    run.target_count = 1
+    run.settings_snapshot = {**run.settings_snapshot, 'production_day': '2026-11-10'}
+    item.brief = {**item.brief, 'editor_id': 'producer'}
+    releases = [FactoryRelease(due_at=when + timedelta(minutes=i), platforms=['douyin'],
+                               run_id=run.id if i == 0 else None) for i in range(5)]
+    db.add_all(releases)
+    db.flush()
+    order = FactoryWorkOrder(key=f'douyin-makeup:{DAY}', kind='douyin_makeup', owner='director',
+                             title='补发', acceptance='仅限指定抖音时段', due_at=when, status='authorized',
+                             evidence={'day': DAY, 'release_ids': [slot.id for slot in releases]})
+    db.add(order)
+    db.flush()
+    assigned = distribution.assign_distribution(db, run.id, DAY, proposal={item.id: 'douyin'})
+    assert assigned[item.id]['carried_from'] == '2026-11-10'
+    assert distribution.guard_publication(db, item, 'douyin', 'prepare', now=NOW)['day'] == DAY
+    job(db, item, status='submitted')
+
+    unrelated, (other,) = run_items(db, ['未经授权的作品'])
+    other.brief = {**other.brief, 'editor_id': 'producer', 'distribution': {**assigned[item.id]}}
+    db.flush()
+    with pytest.raises(ValueError, match='4条'):
+        distribution.guard_publication(db, other, 'douyin', 'prepare', now=NOW)
+    with pytest.raises(ValueError, match='发行日期'):
+        distribution.guard_publication(db, item, 'douyin', 'prepare', now=NOW + timedelta(days=1))
 
 
 

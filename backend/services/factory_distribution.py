@@ -106,6 +106,7 @@ def publication_usage(db, platform, day, *, include_prepares=False,
 
 def guard_publication(db, item, platform, action, *, timezone_name='Asia/Shanghai', now=None):
     from services.factory_team import editor_id
+    from services.factory_makeup import authorized_makeup
     if platform != 'douyin':
         raise ValueError('快手、小红书改为本人手动上传，禁止创建自动发布任务')
     db.execute(update(FactoryRun).where(FactoryRun.id == item.run_id).values(heartbeat_at=FactoryRun.heartbeat_at))
@@ -135,8 +136,10 @@ def guard_publication(db, item, platform, action, *, timezone_name='Asia/Shangha
         raise ValueError('本作品或原始版本已有平台任务，须核对，禁止重复提交')
     occupied = reserved_item_ids(db, platform, today, include_prepares=True,
         timezone_name=timezone_name, exclude_item_id=item.id)
-    if len(occupied) >= DAILY_PLATFORM_LIMIT:
-        raise ValueError('抖音当天已预留或提交4条作品；未知结果也占额度，请改日安排')
+    makeup = authorized_makeup(db, run, today)
+    limit = makeup[1] if makeup else DAILY_PLATFORM_LIMIT
+    if len(occupied) >= limit:
+        raise ValueError(f'抖音当天已预留或提交{limit}条作品；未知结果也占额度，请改日安排')
     timestamp = now or datetime.now(timezone.utc)
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
@@ -153,6 +156,7 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
     from secrets import SystemRandom
     from services.factory_team import editor_id
     from services.factory_editorial_policy import MANUAL_PLATFORMS
+    from services.factory_makeup import authorized_makeup
     db.execute(update(FactoryRun).where(FactoryRun.id == run_id).values(heartbeat_at=FactoryRun.heartbeat_at))
     run = db.get(FactoryRun, run_id)
     if not run or run.settings_snapshot.get('distribution_policy') != CURRENT_DISTRIBUTION_POLICY:
@@ -183,6 +187,9 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
     selections = dict(run.settings_snapshot.get('douyin_random_selections') or {})
     for planned in sorted(set(requested.values())):
         group = [i for i in selected if requested.get(i.id) == planned]
+        makeup = authorized_makeup(db, run, planned)
+        source_day, limit = makeup or (None, DAILY_PLATFORM_LIMIT)
+        carried_from = source_day if source_day and source_day != planned else None
         if weekly:
             if any(editor_id(i) != 'producer2' or proposal.get(i.id) == 'douyin' for i in group):
                 raise ValueError('每周论文批次只接小影2，禁止选择抖音')
@@ -194,7 +201,8 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
                 and i.brief.get('distribution', {}).get('policy') == CURRENT_DISTRIBUTION_POLICY
                 and i.brief.get('distribution', {}).get('day') == planned
                 and i.brief.get('distribution', {}).get('production_kind') != 'weekly_papers'] + group
-            originals = [i for i in daily if not i.brief.get('distribution', {}).get('carried_from')]
+            originals = [i for i in daily if not i.brief.get('distribution', {}).get('carried_from')
+                         and not (carried_from and i.run_id == run.id)]
             if len(originals) > 6 or sum(editor_id(i) == 'producer' for i in originals) > 4 or sum(editor_id(i) == 'producer3' for i in originals) > 2:
                 raise ValueError('每天小影最多4条、小影3最多2条，日常总量最多6条')
             group_ids = {i.id for i in group}
@@ -204,9 +212,9 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
             outside.update(i.id for i in daily if i.id not in group_ids and i.brief.get('distribution', {}).get('douyin_selected'))
             pinned = {i.id for i in group if output.get(i.id, {}).get('douyin_selected')
                 or i.id in reserved or proposal.get(i.id) == 'douyin'}
-            capacity = max(0, DAILY_PLATFORM_LIMIT - len(outside))
+            capacity = max(0, limit - len(outside))
             if len(pinned) > capacity:
-                raise ValueError('固定选择与已有任务超过每日4条，保留历史记录等待核对')
+                raise ValueError(f'固定选择与已有任务超过每日{limit}条，保留历史记录等待核对')
             candidates = [i.id for i in group if i.id not in output and i.id not in pinned and proposal.get(i.id) != 'manual']
             draw_count = min(len(candidates), capacity-len(pinned))
             recent = [key for key in candidates if news_first and recent_news_sources(
@@ -234,6 +242,7 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
                 'douyin_selected': chosen, 'kuaishou_selected': False,
                 'owner_pinned': proposal.get(item.id) == 'douyin',
                 'manual_platforms': list(MANUAL_PLATFORMS),
+                **({'carried_from': carried_from} if carried_from else {}),
                 'reason': ('每周论文独立人工交付，不上抖音。' if weekly else
                     '用户明确指定今天上传抖音；保留官方核验、AI声明、署名与禁止下载。' if proposal.get(item.id) == 'douyin' else
                     '日常6条中优先选取近期有原文的新闻，同优先级随机补齐4条；排期保存。' if chosen and news_first else
