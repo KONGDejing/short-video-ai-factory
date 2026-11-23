@@ -21,6 +21,19 @@ def asset(number):
     return {"id": f"asset-{number}", "sha256": f"{number:064x}", "description": "Verified official demonstration"}
 
 
+def test_direct_demo_does_not_require_auxiliary_visual_reason():
+    official = source('launch', visual_ready=True, visual_assets=[asset(i) for i in range(3)])
+    background = source('background', visual_ready=True, visual_assets=[asset(i) for i in range(3, 6)])
+    brief = {'title': '厂商发布实测演示', 'source_ids': ['launch'], 'visual_source_ids': ['launch']}
+    assert service._eligible_candidates([brief], [official, background], 'tech_montage') == [brief]
+
+    auxiliary = {**brief, 'visual_source_ids': ['launch', 'background']}
+    candidates, diagnostics = service._eligible_candidates([auxiliary], [official, background],
+                                                            'tech_montage', with_diagnostics=True)
+    assert not candidates
+    assert diagnostics[0]['reasons'][0]['code'] == 'missing_visual_support_reason'
+
+
 def test_normal_intake_keeps_catalogue_tail_and_prioritizes_dated_model_news(monkeypatch):
     now = datetime(2026, 11, 11, tzinfo=timezone.utc)
     news = [source(f"news-{i}", kind="news", published_at=now.isoformat()) for i in range(8)]

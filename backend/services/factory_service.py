@@ -382,7 +382,8 @@ def _eligible_candidates(candidates, sources, visual_style, *, with_diagnostics=
                 reasons.append({"code": "insufficient_verified_visuals", "verified_unique_assets": len(verified),
                     "required": 3, "message": "本候选引用来源合计不足3条按原片SHA去重的核验视频，且不是可核验论文选题"})
             row["verified_unique_assets"] = len(verified)
-        if visuals and not (isinstance(candidate.get("visual_support_reason"), str) and candidate["visual_support_reason"].strip()):
+        separate_visual_source = not reasons and any(identifier not in refs for identifier in visuals)
+        if separate_visual_source and not (isinstance(candidate.get("visual_support_reason"), str) and candidate["visual_support_reason"].strip()):
             reasons.append({"code": "missing_visual_support_reason", "message": "辅助画面须说明与本题的具体关系和证据边界"})
         diagnostics.append({**row, "accepted": not reasons, "reasons": reasons})
         if not reasons:
@@ -594,7 +595,7 @@ def _make_plan(run_id):
             "editor_profiles": {k: editor_profile(k) for k in ("producer", "producer2", "producer3")},
             "people_watchlist": people_context(),
             "coverage_instruction": "每日必须主动检查通用大模型的新能力、推理、开源或成本进展，优先真实带日期的发布方原文。同时检查机器人、算力基础设施、端侧芯片、AI工具应用、论文、展会争议。单题可多标签；端侧应用不等于端侧芯片，不把机器人模型冒充通用大模型。不是每天强制凑齐七类：缺原文或对应视频就在coverage_gaps说明，并保留已核验候选，不编造参数或素材。",
-            "source_id_contract": "source_ids和visual_source_ids都只能填写下面source_catalog的source_id（正文页面ID）；绝不能填asset_id（视频ID）。多页共同支持同一题时可联合引用，至少3条原片SHA去重的核验视频；辅助画面须写visual_support_reason说明具体关联及边界。不得拿无关视频补数。",
+            "source_id_contract": "source_ids和visual_source_ids只填source_catalog的source_id（正文页面ID）。同页已同时提供事实和演示时，直接填source_ids即可。多页支持同一题时可联合引用，至少3条按原片去重的核验视频；另引画面时写visual_support_reason，说明具体关联及证据边界。视频asset_id留给剪辑。",
             "major_events": major_events,
             "major_event_instruction": "优先核对这些已采集的重大事件。每项必须在breaking_event_status列出source_id、已证实事实、未确认信息、是否推荐及缺画面原因。缺视频只影响制作就绪，不能把事件当作不存在；虚构反讽需另立创作任务，不冒充新闻实录。",
             "source_catalog": [{"source_id": s["id"], "title": s.get("title"), "kind": s.get("kind"),
@@ -643,7 +644,7 @@ def _make_plan(run_id):
                 break
             emit(run_id, "researcher", "candidate_revision", "再从已核验素材中修正或换题一次，沿用本轮下载结果", "warning")
             assignment = {**assignment, "previous_candidates": raw_candidates, "candidate_feedback": diagnostics,
-                "format_feedback": "上次有效" + str(len(candidates)) + "条，各岗位候选" + str(counts) + "，需满足配额" + str(quotas) + "。按逐条拒因修正，source_ids填正文source_id而非视频asset_id。只用当前已核验且对应本题的来源；素材不足则明确交回，禁止编造或拿无关画面补数。"}
+                "format_feedback": "上次有效" + str(len(candidates)) + "条，各岗位候选" + str(counts) + "，需满足配额" + str(quotas) + "。按逐条拒因修正。优先采用匹配岗位和选题的已核验视频来源。单页同时有原文和画面时只填source_ids；另引画面页时补齐visual_support_reason。素材不足则明确交回。"}
         plan = {**plan, "candidates": candidates, "topic_coverage": candidate_coverage}
         with SessionLocal() as db:
             db.get(FactoryRun, run_id).plan = plan

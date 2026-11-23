@@ -4,7 +4,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 from secrets import randbelow
 from math import ceil
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from agents.registry import DAILY_TARGET
 
 from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
@@ -94,7 +94,8 @@ def release_dict(db, slot):
 def upcoming_releases(db, config):
     now = datetime.now(ZoneInfo(config.timezone))
     start = utc(now.replace(hour=0, minute=0, second=0, microsecond=0))
-    slots = db.query(FactoryRelease).filter(nominal_time() >= start).order_by(nominal_time()).limit(20)
+    slots = db.query(FactoryRelease).filter(or_(nominal_time() >= start, FactoryRelease.due_at >= start))
+    slots = slots.order_by(FactoryRelease.due_at).limit(20)
     return [release_dict(db, slot) for slot in slots]
 
 
