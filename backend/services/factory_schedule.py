@@ -509,14 +509,6 @@ def advance_slot(db, slot, config, now):
 
 
 def tick(db, config, now=None):
-    if config.publish_enabled and 'kuaishou' in config.platforms:
-        from services.factory_transport_health import refresh_kuaishou_transport, restore_saved_session
-        try:
-            restore_saved_session(refresh_kuaishou_transport())
-        except Exception:
-            # One platform's health check must never stop Douyin's release clock.
-            import logging
-            logging.getLogger(__name__).warning('Kuaishou connectivity check failed; continuing other scheduled releases')
     now = now or datetime.now(ZoneInfo(config.timezone))
     if config.manual_delivery_enabled or config.publish_enabled or (config.production_on_release_clock and config.schedule_enabled):
         plan_slots(db, config, now)

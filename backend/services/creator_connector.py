@@ -110,6 +110,12 @@ def _clean_url(url):
 
 def browser_proxy(platform=None):
     """Read deployment routing without placing proxy addresses in source/logs."""
+    if platform == 'kuaishou':
+        from services.factory_transport_health import proxy_url
+        value = proxy_url()
+        if not value:
+            raise ValueError('缺少快手独立北京代理配置')
+        return _browser_proxy_options(value)
     override = os.environ.get(f"CREATOR_BROWSER_PROXY_{_platform(platform).upper()}") if platform else None
     if override and override.lower() == "direct":
         return None
@@ -117,6 +123,10 @@ def browser_proxy(platform=None):
              or os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"))
     if not value:
         return None
+    return _browser_proxy_options(value)
+
+
+def _browser_proxy_options(value):
     parts = urlsplit(value)
     if parts.scheme not in {"http", "https", "socks5"} or not parts.hostname:
         raise ValueError("浏览器代理配置格式无效")
@@ -234,15 +244,16 @@ def install_service(platform, *, start=False):
     units.mkdir(parents=True, exist_ok=True)
     unit = units / service_name(platform)
     quoted = lambda path: json.dumps(str(path))
+    network_environment = '' if platform == 'kuaishou' else (
+        f"EnvironmentFile=-{ROOT / '.runtime/service-network.env'}\n"
+        f"EnvironmentFile=-{ROOT / '.runtime/creator-browser.env'}\n")
     unit.write_text(f"""[Unit]
 Description=Short Video AI Factory / {platform} creator connector
 After=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=-{ROOT / '.runtime/service-network.env'}
-EnvironmentFile=-{ROOT / '.runtime/creator-browser.env'}
-Environment=PYTHONUNBUFFERED=1
+{network_environment}Environment=PYTHONUNBUFFERED=1
 WorkingDirectory={ROOT / 'backend'}
 ExecStart={quoted(sys.executable)} {quoted(Path(__file__).resolve())} --serve --platform {platform}
 Restart=on-failure
@@ -270,6 +281,10 @@ def _ensure_daemon(platform):
         os.chmod(lock.name, 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
         if _alive(platform):
+            if platform == 'kuaishou':
+                from services.factory_transport_health import PROXY_FILE
+                if PROXY_FILE.stat().st_mtime > (directory / 'daemon.pid').stat().st_mtime:
+                    raise RuntimeError('快手代理已变更，请先重启快手独立浏览器服务')
             return
         if not (Path.home() / ".config/systemd/user" / service_name(platform)).is_file():
             install_service(platform)

@@ -23,6 +23,9 @@ def automation_enabled(platform):
 
 
 def publication_transport_state(platform):
+    if platform == 'kuaishou':
+        from services.factory_transport_health import transport_state
+        return transport_state()
     try:
         value = json.loads(TRANSPORT_STATE.read_text()).get(platform, {})
         return {key: value[key] for key in ('ready', 'reason', 'checked_at') if key in value}

@@ -19,6 +19,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 UNIT = "short-video-ai-factory-beijing-proxy.service"
 PORT = 18791
+KUAISHOU_UNIT = "short-video-ai-factory-kuaishou-proxy.service"
+KUAISHOU_PORT = 18792
 
 
 async def public_addresses(host, port):
@@ -124,26 +126,36 @@ async def serve(port):
         await server.serve_forever()
 
 
-def install():
+def install(platform=None):
     runtime = ROOT / ".runtime"
     runtime.mkdir(mode=0o700, exist_ok=True)
-    env = runtime / "beijing-proxy.env"
+    dedicated = platform == 'kuaishou'
+    unit_name, port = (KUAISHOU_UNIT, KUAISHOU_PORT) if dedicated else (UNIT, PORT)
+    env = runtime / ("kuaishou-proxy.env" if dedicated else "beijing-proxy.env")
     if not env.exists():
+        env.touch(mode=0o600, exist_ok=False)
         env.write_text("FACTORY_BEIJING_PROXY_TOKEN=" + secrets.token_urlsafe(32) + "\n")
     env.chmod(0o600)
+    if dedicated:
+        client = runtime / 'kuaishou-publishing.env'
+        if not client.exists():
+            token = env.read_text().strip().split('=', 1)[1]
+            client.touch(mode=0o600, exist_ok=False)
+            client.write_text(f'CREATOR_BROWSER_PROXY_KUAISHOU=http://factory:{token}@127.0.0.1:{port}\n')
+        client.chmod(0o600)
     directory = Path.home() / ".config/systemd/user"
     directory.mkdir(parents=True, exist_ok=True)
     python = ROOT / ".venv/bin/python"
-    unit = directory / UNIT
+    unit = directory / unit_name
     unit.write_text(f'''[Unit]
-Description=Content Factory private Beijing egress proxy
+Description=Content Factory private {'Kuaishou' if dedicated else 'Beijing'} egress proxy
 After=network-online.target
 
 [Service]
 Type=simple
 EnvironmentFile={env}
 WorkingDirectory={ROOT}
-ExecStart={json.dumps(str(python))} {json.dumps(str(Path(__file__).resolve()))} --port {PORT}
+ExecStart={json.dumps(str(python))} {json.dumps(str(Path(__file__).resolve()))} --port {port}
 Restart=on-failure
 RestartSec=5
 UMask=0077
@@ -156,16 +168,17 @@ ProtectHome=read-only
 WantedBy=default.target
 ''')
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", "--now", UNIT], check=True, capture_output=True)
+    subprocess.run(["systemctl", "--user", "enable", "--now", unit_name], check=True, capture_output=True)
     print("Private loopback proxy installed; credentials remain in runtime storage")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--install", action="store_true")
+    parser.add_argument("--platform", choices=['kuaishou'])
     parser.add_argument("--port", type=int, default=PORT)
     arguments = parser.parse_args()
     if arguments.install:
-        install()
+        install(arguments.platform)
     else:
         asyncio.run(serve(arguments.port))

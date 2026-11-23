@@ -34,12 +34,20 @@ def test_all_three_uploads_are_authorized_but_account_analytics_stays_manual():
 
 def test_failed_beijing_transport_falls_back_without_revoking_owner_scope(tmp_path, monkeypatch):
     from services import factory_platform_policy as policy
+    from services import factory_transport_health as transport
+    from datetime import timezone
     path = tmp_path / 'transport.json'
-    path.write_text(json.dumps({'kuaishou': {'ready': False, 'reason': 'Beijing TLS unavailable', 'password': 'fixture-never-expose'}}))
-    monkeypatch.setattr(policy, 'TRANSPORT_STATE', path)
+    proxy_path = tmp_path / 'kuaishou.env'
+    proxy_path.write_text('')
+    path.write_text(json.dumps({'ready': False, 'reason': 'Beijing TLS unavailable',
+                               'checked_at': datetime.now(timezone.utc).isoformat(), 'password': 'fixture-never-expose'}))
+    monkeypatch.setattr(transport, 'STATUS_FILE', path)
+    monkeypatch.setattr(transport, 'PROXY_FILE', proxy_path)
     assert policy.automation_enabled('kuaishou')
     assert not policy.effective_automation_enabled('kuaishou')
     assert policy.effective_automation_enabled('douyin')
+    assert policy.effective_automation_enabled('xiaohongshu')
+    assert policy.publication_transport_state('kuaishou')['reason'] == 'Beijing TLS unavailable'
     assert 'password' not in policy.publication_transport_state('kuaishou')
 
 
