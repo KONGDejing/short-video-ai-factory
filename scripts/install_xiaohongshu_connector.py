@@ -20,8 +20,8 @@ After=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=-{runtime / 'service-network.env'}
 Environment=PYTHONUNBUFFERED=1
+UnsetEnvironment=HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy
 WorkingDirectory={ROOT / 'backend'}
 ExecStart={sys.executable} {ROOT / 'backend/services/xiaohongshu_connector.py'} --serve
 Restart=on-failure
