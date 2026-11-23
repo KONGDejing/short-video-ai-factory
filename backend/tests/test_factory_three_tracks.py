@@ -41,8 +41,8 @@ def batch(db, key='daily'):
 
 def test_saved_policy_retains_watch_scope_and_replaces_daily_paper_plan():
     p=editorial_policy()
-    assert p['production']['daily_total']==7 and p['production']['douyin_daily_total']==4
-    assert p['production']['editor_daily_quotas']=={'producer':4,'producer2':0,'producer3':3}
+    assert p['production']['daily_total']==6 and p['production']['douyin_daily_total']==4
+    assert p['production']['editor_daily_quotas']=={'producer':4,'producer2':0,'producer3':2}
     assert p['production']['weekly_papers']['total']==2
     assert len(p['people'])==50 and Counter(x['region'] for x in p['people'])=={'海外':40,'国内':10}
     assert {'Geoffrey Hinton','Mark Zuckerberg','Lisa Su'} <= {x['name'] for x in p['people']}
@@ -148,10 +148,10 @@ def test_four_slots_bind_distinct_items_and_keep_user_pins_first(db):
     assert [s.item_id for s in slots]==before
 
 
-def test_daily_six_and_four_slots_are_independent_and_kuaishou_has_no_schedule(db,monkeypatch):
+def test_reduced_output_can_keep_the_legacy_douyin_schedule(db,monkeypatch):
     from services import factory_schedule as scheduler,factory_service
     from zoneinfo import ZoneInfo
-    cfg=FactoryConfig(id=1,daily_target=6,schedule_enabled=True,schedule_time='00:30',publish_jitter_seconds=0)
+    cfg=FactoryConfig(id=1,daily_target=5,schedule_enabled=True,schedule_time='00:30',publish_jitter_seconds=0)
     db.add(cfg);db.commit();now=datetime(2026,11,16,0,30,tzinfo=ZoneInfo('Asia/Shanghai'))
     def create(session,**kwargs):
         run=FactoryRun(id='six',target_count=kwargs['target_count'],schedule_key=kwargs['schedule_key'],
@@ -162,14 +162,14 @@ def test_daily_six_and_four_slots_are_independent_and_kuaishou_has_no_schedule(d
     assert db.query(FactoryRelease).count()==8
     assert all(slot.platforms==['douyin'] for slot in db.query(FactoryRelease))
     scheduler.plan_production(db,cfg,now);scheduler.plan_production(db,cfg,now)
-    start.assert_called_once();assert start.call_args.kwargs['target_count']==6
+    start.assert_called_once();assert start.call_args.kwargs['target_count']==5
     assert len(start.call_args.kwargs['release_slot_ids'])==4
 
 
 def test_earlier_batch_keeps_one_release_without_using_new_production_quota(db, monkeypatch):
     from services import factory_schedule as scheduler, factory_service
     from zoneinfo import ZoneInfo
-    cfg = FactoryConfig(id=1, daily_target=6, schedule_enabled=True, schedule_time='00:30',
+    cfg = FactoryConfig(id=1, daily_target=5, schedule_enabled=True, schedule_time='00:30',
                         publish_times=['05:00', '05:30', '06:00', '06:30'], publish_jitter_seconds=0)
     db.add(cfg)
     zone = ZoneInfo('Asia/Shanghai')
@@ -201,7 +201,7 @@ def test_earlier_batch_keeps_one_release_without_using_new_production_quota(db, 
     monkeypatch.setattr(factory_service, 'start_run', create)
     scheduler.plan_production(db, cfg, now)
     run = db.get(FactoryRun, 'new')
-    assert run.target_count == 6
+    assert run.target_count == 5
     assert len(run.settings_snapshot['release_slot_ids']) == 3
     assert release.id not in run.settings_snapshot['release_slot_ids']
     routes = assign_distribution(db, run.id, DAY)
@@ -255,5 +255,5 @@ def test_completed_new_policy_day_cannot_accidentally_start_another_six(db, monk
     r.settings_snapshot={**r.settings_snapshot,'production_day':local_day()};r.target_count=6
     db.add(FactoryConfig(id=1));db.commit()
     monkeypatch.setattr(factory_service,'queue_available',lambda:True)
-    with pytest.raises(ValueError,match='当天7条'):
+    with pytest.raises(ValueError,match='当天6条'):
         factory_service.start_run(db,target_count=6)

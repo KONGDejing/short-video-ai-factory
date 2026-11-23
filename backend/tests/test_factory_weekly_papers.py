@@ -20,7 +20,7 @@ def db():
 
 
 def test_weekly_papers_use_separate_quota_not_daily_paper_slots():
-    assert editor_quotas()=={'producer':4,'producer2':0,'producer3':3}
+    assert editor_quotas()=={'producer':4,'producer2':0,'producer3':2}
     assert editor_quotas(1,'weekly_papers')=={'producer':0,'producer2':1,'producer3':0}
     assert editor_quotas(2,'weekly_papers')=={'producer':0,'producer2':2,'producer3':0}
     with pytest.raises(ValueError):editor_quotas(3,'weekly_papers')
@@ -84,6 +84,6 @@ def test_weekly_budget_is_two_extra_to_daily_six_and_cannot_be_bypassed(db,monke
     second.active_slot=None;second.status='completed';db.commit()
     with pytest.raises(ValueError,match='本周2条'):
         factory_service.start_run(db,target_count=1,production_kind='weekly_papers')
-    with pytest.raises(ValueError,match='当天7条'):
+    with pytest.raises(ValueError,match='当天6条'):
         factory_service.start_run(db,target_count=1)
     assert enqueue.call_count==2

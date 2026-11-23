@@ -39,7 +39,7 @@ def test_no_generic_proxy_or_direct_fallback_is_used(tmp_path,monkeypatch,value)
     probe=Mock();monkeypatch.setattr(health,'_probe',probe)
     assert not health.refresh_kuaishou_transport()['ready']
     probe.assert_not_called()
-    with pytest.raises(ValueError, match='快手独立北京代理'):
+    with pytest.raises(ValueError, match='快手专用代理'):
         browser_proxy('kuaishou')
     assert browser_proxy('douyin')['server']=='http://fixture-overseas-proxy:1234'
 

@@ -127,7 +127,7 @@ def test_material_gap_keeps_valid_topics_running_and_final_report_partial(isolat
     with isolated_factory() as db:
         run = db.get(FactoryRun, run_id)
         assert run.target_count == 6
-        assert run.plan['material_shortfall'] == {'producer': 2, 'producer2': 0, 'producer3': 2}
+        assert run.plan['material_shortfall'] == {'producer': 2, 'producer2': 0, 'producer3': 1}
         assert assign_editors(db, run_id) == {'producer': 2, 'producer2': 0, 'producer3': 1}
         items = db.query(FactoryItem).filter_by(run_id=run_id).all()
         assert len(items) == 3 and all(i.brief['title'] != invalid['title'] for i in items)

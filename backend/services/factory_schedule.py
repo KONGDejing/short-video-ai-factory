@@ -10,7 +10,7 @@ from agents.registry import DAILY_TARGET
 from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
 from services import factory_publishing as publishing
 from services.factory_distribution import CURRENT_DISTRIBUTION_POLICY, local_day
-from services.factory_release_plan import DAILY_OUTPUT, THREE_PLATFORM_PLAN, scheduled_times
+from services.factory_release_plan import ADDITIONAL_TIMES, DAILY_OUTPUT, THREE_PLATFORM_PLAN, scheduled_times
 from services.factory_resources import MemoryPressure, ensure_memory_available
 
 PREPARE_LEAD = timedelta(minutes=20)
@@ -132,7 +132,7 @@ def _set_jitter(db, slot, config, now):
 def plan_slots(db, config, now):
     """Persist one draw per date/time; restart and polling never redraw it."""
     if not 1 <= config.daily_target <= DAILY_TARGET or not 1 <= len(config.publish_times) <= 4:
-        raise ValueError("每天制作最多7条，抖音最多4个发布时间")
+        raise ValueError(f"每天制作最多{DAILY_OUTPUT}条，抖音最多4个发布时间")
     if (not config.platforms or len(config.platforms) != len(set(config.platforms))
             or not set(config.platforms).issubset({"douyin", "xiaohongshu", "kuaishou"})):
         raise ValueError("短视频计划仅包含抖音、小红书、快手；B站专题保持独立排期")
@@ -143,8 +143,15 @@ def plan_slots(db, config, now):
     for offset in (0, 1):
         day = now.date() + timedelta(days=offset)
         start = utc(datetime.fromisoformat(day.isoformat()).replace(tzinfo=now.tzinfo))
-        existing = [slot for slot in db.query(FactoryRelease).filter(nominal_time() >= start,
-            nominal_time() < start + timedelta(days=1)).all() if slot.platforms not in (['kuaishou'], ['xiaohongshu'])]
+        day_slots = db.query(FactoryRelease).filter(nominal_time() >= start, nominal_time() < start + timedelta(days=1)).all()
+        existing = [slot for slot in day_slots if slot.platforms not in (['kuaishou'], ['xiaohongshu'])]
+        for slot in day_slots:
+            if slot.platforms != ['kuaishou'] or slot.status in FINAL or slot.run_id or slot.item_id:
+                continue
+            local_clock = (slot.nominal_at or slot.due_at).replace(tzinfo=timezone.utc).astimezone(now.tzinfo).strftime('%H:%M')
+            if local_clock not in ADDITIONAL_TIMES['kuaishou']:
+                slot.status = 'cancelled'
+                slot.results = {'kuaishou': _result('cancelled', '快手每天保留一个开工时段')}
         for slot in existing:
             _set_jitter(db, slot, config, now_utc)
             db.flush()

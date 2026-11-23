@@ -176,6 +176,12 @@ def test_payload_drops_credentials_and_rejects_media_outside_storage(monkeypatch
     assert "password" not in cleaned and "cookies" not in cleaned
     assert cleaned["ai_generated"] is True
     assert cleaned["requested_publication_city"] == "北京"
+    from services import factory_transport_health
+    private = tmp_path / 'kuaishou.env'
+    private.write_text('KUAISHOU_PUBLICATION_CITY=\n')
+    monkeypatch.setattr(factory_transport_health, 'PROXY_FILE', private)
+    assert 'requested_publication_city' not in connector._payload('kuaishou', 'prepare', payload)
+    assert connector._payload('douyin', 'prepare', payload)['requested_publication_city'] == '北京'
     (storage / "escape.mp4").symlink_to(tmp_path / "outside.mp4")
     (tmp_path / "outside.mp4").write_bytes(b"fixture")
     with pytest.raises(ValueError, match="storage"):

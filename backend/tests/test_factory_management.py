@@ -81,10 +81,10 @@ def test_work_orders_are_durable_idempotent_and_keep_bilibili_separate(db):
     assert all(r.status == "blocked" and r.evidence["seconds_range"] == [360, 600] for r in long)
     assert db.get(FactoryGrowthPlan, 1).policy["bilibili"]["weekly_count"] == 2
     policy = db.get(FactoryGrowthPlan, 1).policy
-    assert policy["shorts_per_day"] == 7 and policy["max_short_submissions_per_day"] == 7
+    assert policy["shorts_per_day"] == 6 and policy["max_short_submissions_per_day"] == 6
     assert policy["automated_platforms"] == ["douyin", "kuaishou", "xiaohongshu"]
     assert policy["platform_delivery_modes"]["kuaishou"] == "automated"
-    assert policy["editor_quotas"] == {"producer": 4, "producer2": 0, "producer3": 3}
+    assert policy["editor_quotas"] == {"producer": 4, "producer2": 0, "producer3": 2}
     assert all(order.evidence["required"] == policy["editor_quotas"][order.owner] for order in daily if order.owner in policy["editor_quotas"])
 
 
@@ -97,7 +97,7 @@ def test_existing_growth_plan_replaces_old_distribution_without_losing_baselines
     updated = manager.initialize(db)
     assert updated.baselines == baseline
     assert updated.policy["automated_platforms"] == ["douyin", "kuaishou", "xiaohongshu"]
-    assert updated.policy["max_short_submissions_per_day"] == 7
+    assert updated.policy["max_short_submissions_per_day"] == 6
     assert updated.policy["single_platform_per_original"] is True
 
 
@@ -190,7 +190,7 @@ def test_today_assignments_include_carried_delivery_and_exclude_cancelled_slots(
     analytics={'platforms':[]}
     monkeypatch.setattr(operations.factory_analytics,'overview',lambda _:analytics)
     state=operations.overview(db,now=now)
-    assert state['summary']['completed']==1 and state['summary']['target']==7
+    assert state['summary']['completed']==1 and state['summary']['target']==6
     assert state['summary']['publish_target']==4 and state['summary']['scheduled_slots']==1
     manager.sync_work_orders(db,{'summary':{'target':6,'fully_submitted_slots':0}},analytics,now)
     assert db.get(FactoryWorkOrder,'daily:2026-11-11:producer3').evidence['done']==1

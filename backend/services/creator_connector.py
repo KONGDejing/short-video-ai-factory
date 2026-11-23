@@ -114,7 +114,7 @@ def browser_proxy(platform=None):
         from services.factory_transport_health import proxy_url
         value = proxy_url()
         if not value:
-            raise ValueError('缺少快手独立北京代理配置')
+            raise ValueError('缺少快手专用代理配置')
         return _browser_proxy_options(value)
     override = os.environ.get(f"CREATOR_BROWSER_PROXY_{_platform(platform).upper()}") if platform else None
     if override and override.lower() == "direct":
@@ -342,8 +342,13 @@ def _payload(platform, action, payload):
         result['allow_download'] = False
         if payload.get('owner_attribution'):
             result['owner_attribution'] = payload['owner_attribution']
-    if automation_enabled(platform):
+    if platform == 'douyin':
         result["requested_publication_city"] = "北京"
+    elif platform == 'kuaishou':
+        from services.factory_transport_health import publication_city
+        city = publication_city()
+        if city:
+            result['requested_publication_city'] = city
     if payload.get("cover_path"):
         result["cover_path"] = _media(payload["cover_path"], {".png", ".jpg", ".jpeg"})
     result.update(revision_fields)

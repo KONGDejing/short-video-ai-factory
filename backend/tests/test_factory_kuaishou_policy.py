@@ -16,7 +16,7 @@ from services import factory_platform_policy, factory_schedule
 from services.factory_distribution import assign_distribution, guard_publication
 from services.factory_release_plan import PLATFORM_LIMITS
 from services.factory_release_trial import require_live_trial, trial_key
-from services.factory_service import config_dict
+from services.factory_service import config_dict, get_config
 from services.factory_team import DAILY_EDITOR_ORDER
 
 
@@ -29,9 +29,9 @@ def db():
     engine.dispose()
 
 
-def test_seven_clock_slots_keep_unique_platforms_and_reserve_each_cap(db):
+def test_six_clock_slots_keep_unique_platforms_and_reserve_each_cap(db):
     start = datetime(2026, 11, 24, tzinfo=ZoneInfo('Asia/Shanghai'))
-    config = FactoryConfig(daily_target=7, publish_jitter_seconds=0, auto_publish_xiaohongshu=True,
+    config = FactoryConfig(daily_target=6, publish_jitter_seconds=0, auto_publish_xiaohongshu=True,
                            publish_times=['05:00', '05:30', '06:00', '06:30'])
     db.add(config)
     db.commit()
@@ -62,11 +62,11 @@ def test_seven_clock_slots_keep_unique_platforms_and_reserve_each_cap(db):
         db.add(FactoryPublication(item_id=item.id, platform=platform, action='publish', status='submitted',
                                   created_at=slot.due_at))
         db.flush()
-    assert len({slot.item_id for slot in slots}) == 7
+    assert len({slot.item_id for slot in slots}) == 6
 
 
 def test_legacy_archive_cannot_be_sent_to_restored_platform(db):
-    config = FactoryConfig(daily_target=6)
+    config = FactoryConfig(daily_target=5)
     db.add(config)
     db.flush()
     run = FactoryRun(settings_snapshot=config_dict(config))
@@ -79,6 +79,23 @@ def test_legacy_archive_cannot_be_sent_to_restored_platform(db):
     assign_distribution(db, run.id, day=today.date())
     with pytest.raises(ValueError):
         guard_publication(db, item, 'kuaishou', 'prepare', now=today)
+
+
+def test_existing_day_plan_keeps_only_the_first_kuaishou_slot(db):
+    now = datetime(2026, 11, 24, tzinfo=ZoneInfo('Asia/Shanghai'))
+    config = FactoryConfig(id=1, daily_target=7, publish_jitter_seconds=0,
+                           publish_times=['05:00', '05:30', '06:00', '06:30'])
+    obsolete = FactoryRelease(due_at=factory_schedule.utc(now.replace(hour=9)),
+                              nominal_at=factory_schedule.utc(now.replace(hour=9)), platforms=['kuaishou'])
+    db.add_all([config, obsolete])
+    db.commit()
+    assert get_config(db).daily_target == 6
+    factory_schedule.plan_slots(db, config, now)
+    factory_schedule.plan_slots(db, config, now)
+    assert obsolete.status == 'cancelled'
+    rows = db.query(FactoryRelease).filter(FactoryRelease.nominal_at < factory_schedule.utc(now + timedelta(days=1)),
+                                           FactoryRelease.status != 'cancelled').all()
+    assert Counter(row.platforms[0] for row in rows) == PLATFORM_LIMITS
 
 
 def test_failed_kuaishou_network_keeps_slot_for_its_own_platform(db, monkeypatch):

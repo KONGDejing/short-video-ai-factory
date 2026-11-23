@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from config import settings
 from database import SessionLocal
 from models.factory import FactoryConfig, FactoryRun, FactoryItem, FactoryEvent, FactoryPublication, FactoryRelease, FactoryWorkOrder
-from agents.registry import AGENTS, AGENT_MAP, PLATFORMS
+from agents.registry import AGENTS, AGENT_MAP, DAILY_EDITOR_QUOTAS, PLATFORMS
 from services.factory_llm import call_agent, RunCancelled, ModelServiceUnavailable
 from services.factory_resources import MemoryPressure, ensure_memory_available
 from services.factory_editorial import STRATEGY, validate_editorial_scenes, validate_follow_prompt
@@ -52,6 +52,7 @@ def config_dict(config):
 
 
 def get_config(db):
+    from services.factory_release_plan import DAILY_OUTPUT
     config = db.get(FactoryConfig, 1)
     if not config:
         config = FactoryConfig(id=1)
@@ -61,6 +62,9 @@ def get_config(db):
         except IntegrityError:
             db.rollback()
             config = db.get(FactoryConfig, 1)
+    if config.daily_target > DAILY_OUTPUT:
+        config.daily_target = DAILY_OUTPUT
+        db.commit()
     return config
 
 
@@ -220,17 +224,17 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
     if config['visual_style'] != 'tech_montage':
         raise ValueError('新的三方向制作不使用统一文字卡片；请选择科技成果/论文/新闻对应的真实素材模式')
     if not 1 <= target <= DAILY_OUTPUT:
-        raise ValueError("每轮产量应为 1–7 条")
+        raise ValueError(f"每轮产量应为 1–{DAILY_OUTPUT} 条")
     if production_kind not in {'daily', 'weekly_papers'}:
         raise ValueError('未知排产类型')
     config['production_kind'] = production_kind
     config["editor_quotas"] = editor_quotas(target, production_kind)
-    limits = {'producer': 0, 'producer2': 2, 'producer3': 0} if production_kind == 'weekly_papers' else {'producer':4,'producer2':0,'producer3':3}
+    limits = {'producer': 0, 'producer2': 2, 'producer3': 0} if production_kind == 'weekly_papers' else DAILY_EDITOR_QUOTAS
     if editor_quota_override is not None:
         if (set(editor_quota_override) != set(config["editor_quotas"])
                 or any(type(v) is not int or not 0 <= v <= limits[k] for k,v in editor_quota_override.items())
                 or sum(editor_quota_override.values()) != target):
-            raise ValueError("配额必须符合小影4条、小影3三条，或独立每周论文最多2条")
+            raise ValueError("配额必须符合小影4条、小影3两条，或独立每周论文最多2条")
         config["editor_quotas"] = dict(editor_quota_override)
     config["publish_enabled"] = False
     config["max_llm_calls"] = max(config["max_llm_calls"], target * 12 + 12)
@@ -281,7 +285,7 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
     if production_kind == 'weekly_papers' and weekly_target + target > 2:
         raise ValueError('本周2条论文名额已预留，请恢复原论文批次，不能重复加产')
     if production_kind == 'daily' and used_target + target > DAILY_OUTPUT:
-        raise ValueError('当天7条原创生产名额已预留；请恢复原批次或显式调整未开工计划，避免自动加产')
+        raise ValueError(f'当天{DAILY_OUTPUT}条原创生产名额已预留；请恢复原批次或显式调整未开工计划，避免自动加产')
     config['production_day'] = production_day
     pressure = None
     try:

@@ -7,7 +7,7 @@ def render_policy_document():
     p=editorial_policy()
     css='body{max-width:1150px;margin:35px auto;padding:0 20px;background:#0b1420;color:#e4edf6;font:16px/1.8 sans-serif}h1{font-size:28px}article{padding:20px;border:1px solid #34506a;border-radius:12px;margin:18px 0}a{color:#86d7ff}table{border-collapse:collapse;width:100%}th,td{padding:12px 8px;text-align:left;vertical-align:top;border-bottom:1px solid #314255}strong{color:#a8e5d5}.notice{padding:16px;background:#20372d;border-radius:10px}@media(max-width:700px){table{font-size:12px}td,th{padding:8px 4px}}'
     parts=['<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>三位剪辑师职责与发布规则</title><style>'+css+'</style>',
-        '<h1>三位剪辑师职责与发布规则</h1><p class="notice">已确认保存 · 2026-11-23 · 每天小影4条、小影3三条。抖音4条、快手2条、小红书1条，各自发布独立原创，统一采用抖音成片风格。小影2每周额外制作2条研究突破解读，单独人工交付。全部成片和文案保留。</p>']
+        '<h1>三位剪辑师职责与发布规则</h1><p class="notice">已确认保存 · 2026-11-23 · 每天小影4条、小影3两条。抖音4条、快手1条、小红书1条，各自发布独立原创，统一采用抖音成片风格。小影2每周额外制作2条研究突破解读，单独人工交付。全部成片和文案保留。</p>']
     for t in p['tracks']:
         parts.append('<article><h2>'+escape(t['editor']+' · '+t['direction'])+'</h2>'+''.join('<p><strong>'+label+'：</strong>'+escape(t[key])+'</p>' for label,key in [('内容','subjects'),('口播结构','story'),('画面风格','visual'),('声音表达','voice')])+'</article>')
     parts.append('<h2>海外核心公司</h2><p>'+escape('；'.join(p['overseas_core_companies']))+'</p><h2>国内仅限七家</h2><p>'+escape('；'.join(p['domestic_company_allowlist']))+'</p>')

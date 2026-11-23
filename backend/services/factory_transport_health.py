@@ -22,6 +22,11 @@ INTERVAL_SECONDS = 300
 _last_session_attempt = float('-inf')
 
 
+def publication_city():
+    values = dotenv_values(PROXY_FILE, interpolate=False) if PROXY_FILE.is_file() else {}
+    return None if values.get('KUAISHOU_PUBLICATION_CITY') == '' else '北京'
+
+
 def proxy_url():
     """The browser and health probe use the same private, Kuaishou-only route."""
     try:
@@ -29,7 +34,7 @@ def proxy_url():
         parts = urlsplit(value) if value else None
         if parts and parts.scheme in {'http', 'https', 'socks5'} and parts.hostname:
             port = parts.port
-            if parts.hostname not in {'127.0.0.1', 'localhost', '::1'} or port == 18792:
+            if parts.hostname not in {'127.0.0.1', 'localhost', '::1'} or port != 18791:
                 return value
     except (OSError, ValueError):
         pass
@@ -79,10 +84,10 @@ def _probe(proxy):
         with httpx.Client(proxy=proxy, trust_env=False, timeout=8, follow_redirects=False) as client:
             with client.stream('GET', 'https://cp.kuaishou.com/') as response:
                 if 200 <= response.status_code < 400:
-                    return True, '快手官方公共入口HTTPS已连通；登录、北京地点控件及发布回执分别核验'
+                    return True, '快手官方公共入口HTTPS已连通，下一步核验登录及发布回执'
                 return False, f'快手官方公共入口返回HTTP {response.status_code}，自动上传继续等待'
     except (httpx.HTTPError, ValueError, ImportError) as error:
-        return False, f'快手独立北京线路连接官方后台失败（{type(error).__name__}），作品保留待发'
+        return False, f'快手独立发布线路连接官方后台失败（{type(error).__name__}），作品保留待发'
 
 
 def refresh_kuaishou_transport(now=None):
@@ -103,7 +108,7 @@ def refresh_kuaishou_transport(now=None):
             return prior
         proxy = proxy_url()
         if not proxy:
-            ready, reason = False, '缺少快手独立北京代理配置'
+            ready, reason = False, '缺少快手专用代理配置'
         else:
             ready, reason = _probe(proxy)
         value = {'ready': ready, 'reason': reason, 'checked_at': current.isoformat(),

@@ -548,9 +548,9 @@ npm --prefix frontend run build
 
 ## 北京代理与发布暂停
 
-11 月 12 日启用了 `douyin-four-random-v1`。当前每日发行计划为抖音 4 条、快手 2 条、小红书 1 条，作品独立分配。每周论文由小影2独立制作2条，只交付人工发布包。分发结果和时刻均保存，历史官方回执及未知提交结果保留。
+11 月 12 日启用了 `douyin-four-random-v1`。当前每日发行计划为抖音 4 条、快手 1 条、小红书 1 条，作品独立分配。每周论文由小影2独立制作2条，只交付人工发布包。分发结果和时刻均保存，历史官方回执及未知提交结果保留。
 
-`.venv/bin/python scripts/beijing_proxy.py --install` 安装抖音使用的用户级 HTTPS 隧道代理。快手单独运行 `.venv/bin/python scripts/install_creator_connectors.py --platform kuaishou`，安装专用代理、浏览器服务和每五分钟运行的独立探测定时器。快手代理地址读自 `.runtime/kuaishou-publishing.env`，默认端口为 `18792`，代理凭据、浏览器会话和连通性状态由快手单独保存。切换到其他自有代理前先核实北京出口，等待快手当前提交结束后重启快手浏览器，再核对连通性和官方回执。运行时配置与凭据保存在 Git 忽略的目录。
+`.venv/bin/python scripts/beijing_proxy.py --install` 安装抖音使用的用户级 HTTPS 隧道代理。快手单独运行 `.venv/bin/python scripts/install_creator_connectors.py --platform kuaishou`，安装专用代理、浏览器服务和每五分钟运行的独立探测定时器。快手代理地址读自 `.runtime/kuaishou-publishing.env`，默认端口为 `18792`，代理凭据、浏览器会话和连通性状态由快手单独保存。快手可单独使用账号负责人确认的旧线路；地点留空时使用平台默认值。变更快手线路后，等待当前提交结束，重启快手浏览器并核对连通性和官方回执。运行时配置与凭据保存在 Git 忽略的目录。
 
 网络出口北京、平台IP属地、作品地点标签是三个独立验证项。已验证代理出口，以及抖音官方表单的城市级“北京市”选项；仍不能宣称已有作品的“美国”已被改成北京。请求中仅保存 `requested_publication_city`，抖音在准备阶段选择官方“北京市”并在提交前重读控件，地点变化则阻止提交；快手地点标签尚未联调时继续阻止提交。不能用网络地理查询代替作品位置。快手在该出口的TLS连接尚未通过，不能静默回退到美国代理或浏览器直连。
 

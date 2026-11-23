@@ -258,9 +258,8 @@ def _begin_publication(db, item_id, action, platform):
         payload.update(video_path=variant.get("video_path") or item.media["video_path"],
                        cover_path=variant.get("cover_path") or item.media["cover_path"],
                        title=variant["title"], caption=caption, tags=tags, ai_generated=True)
-        if platform in {"douyin", "kuaishou"}:
-            payload["requested_publication_city"] = "北京"
         if platform == 'douyin':
+            payload['requested_publication_city'] = '北京'
             payload['allow_download'] = False
             payload['owner_attribution'] = (variant.get('delivery_quality') or {}).get('branding_signature')
     job = existing if reuse_job else FactoryPublication(item_id=item_id, platform=platform, action=action)
