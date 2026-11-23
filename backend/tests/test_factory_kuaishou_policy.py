@@ -11,10 +11,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database import Base
-from models.factory import FactoryConfig, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
+from models.factory import FactoryConfig, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun, FactoryWorkOrder
 from services import factory_platform_policy, factory_schedule
 from services.factory_distribution import assign_distribution, guard_publication
 from services.factory_release_plan import PLATFORM_LIMITS
+from services.factory_release_trial import require_live_trial, trial_key
 from services.factory_service import config_dict
 from services.factory_team import DAILY_EDITOR_ORDER
 
@@ -92,3 +93,34 @@ def test_failed_kuaishou_network_keeps_slot_for_its_own_platform(db, monkeypatch
         'status': 'blocked', 'message': '专用线路连接失败'}
     assert slot.platforms == ['kuaishou']
     begin.assert_not_called()
+
+
+def test_scheduled_publication_waits_for_the_actual_trial_receipt(db):
+    run = FactoryRun(active_slot=None)
+    db.add(run)
+    db.flush()
+    item = FactoryItem(run_id=run.id, position=0)
+    db.add(item)
+    db.flush()
+    now = datetime(2026, 11, 23, 8)
+    slot = FactoryRelease(due_at=now, item_id=item.id, platforms=['xiaohongshu'])
+    db.add(slot)
+    db.flush()
+    order = FactoryWorkOrder(key=trial_key('xiaohongshu'), kind='platform_release_trial',
+                             owner='publisher', title='发布验证', acceptance='官方回执',
+                             due_at=now, status='validating', evidence={'release_id': slot.id})
+    db.add(order)
+    db.flush()
+    require_live_trial(db, 'xiaohongshu', item.id)
+    with pytest.raises(ValueError, match='等待本次试发'):
+        require_live_trial(db, 'xiaohongshu', 'another-original')
+    receipt = FactoryPublication(item_id=item.id, platform='xiaohongshu', action='publish',
+                                 status='submitted', result={})
+    db.add(receipt)
+    db.flush()
+    with pytest.raises(ValueError, match='等待本次试发'):
+        require_live_trial(db, 'xiaohongshu', 'another-original')
+    receipt.result = {'evidence': {'type': 'api_receipt', 'note_id': 'official-fixture'}}
+    db.flush()
+    require_live_trial(db, 'xiaohongshu', 'another-original')
+    assert order.status == 'completed' and order.evidence['receipt_job_id'] == receipt.id

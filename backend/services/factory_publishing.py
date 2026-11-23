@@ -171,6 +171,8 @@ def _begin_publication(db, item_id, action, platform):
         raise ValueError(f"{platform_name}已暂停短视频发布，不在当前发行计划中")
     if platform == 'xiaohongshu' and not config.auto_publish_xiaohongshu:
         raise ValueError('小红书自动发布当前已暂停')
+    from services.factory_release_trial import require_live_trial
+    require_live_trial(db, platform, item.id)
     if item.status != "completed" or not item.media.get("video_path"):
         raise ValueError("需要先完成视频制作、审核与平台素材包")
     if item.media.get("publication_hold"):
