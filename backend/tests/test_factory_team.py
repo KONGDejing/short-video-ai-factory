@@ -28,26 +28,26 @@ def briefs():
             for index, category in enumerate(["科技成果", "智能硬件", "人物新闻", "端侧AI", "科技成果", "公司争议"])]
 
 
-def test_persisted_defaults_are_six_and_three_editors_have_two_each(db):
+def test_persisted_defaults_plan_seven_originals(db):
     config, run = FactoryConfig(), FactoryRun()
     db.add_all([config, run]); db.commit()
-    assert config.daily_target == run.target_count == 6
+    assert config.daily_target == run.target_count == 7
     assert config.publish_times == list(DEFAULT_PUBLISH_TIMES) == ["17:00", "19:00", "20:00", "22:00"]
     assert config.publish_jitter_seconds == 900
     assert config.platforms == ["douyin", "xiaohongshu", "kuaishou"]
     assert len(config.publish_times) * len(config.platforms) == 12
-    assert {owner:AGENT_MAP[owner]['daily_quota'] for owner in DAILY_EDITOR_QUOTAS} == {'producer':4,'producer2':0,'producer3':2}
+    assert {owner:AGENT_MAP[owner]['daily_quota'] for owner in DAILY_EDITOR_QUOTAS} == {'producer':4,'producer2':0,'producer3':3}
 
 
-@pytest.mark.parametrize("target", range(1, 7))
+@pytest.mark.parametrize("target", range(1, 8))
 def test_partial_run_quotas_are_balanced_and_never_exceed_daily_caps(target):
     quotas = editor_quotas(target)
     assert sum(quotas.values()) == target
     assert set(quotas) == set(DAILY_EDITOR_QUOTAS)
-    assert quotas['producer'] <= 4 and quotas['producer2'] == 0 and quotas['producer3'] <= 2
+    assert quotas['producer'] <= 4 and quotas['producer2'] == 0 and quotas['producer3'] <= 3
 
 
-@pytest.mark.parametrize("target", [0, 7, 10, True, 6.0])
+@pytest.mark.parametrize("target", [0, 8, 10, True, 6.0])
 def test_oversized_or_invalid_new_run_cannot_allocate_quotas(target):
     with pytest.raises(ValueError):
         editor_quotas(target)
@@ -55,9 +55,9 @@ def test_oversized_or_invalid_new_run_cannot_allocate_quotas(target):
 
 def test_selection_validation_returns_ordered_ids_without_mutation():
     plan = briefs(); original = deepcopy(plan)
-    owners = validate_editor_plan(plan, [], editor_quotas())
+    owners = validate_editor_plan(plan, [], editor_quotas(len(plan)))
     assert owners == ["producer", "producer", "producer3", "producer", "producer", "producer3"]
-    assert {key:Counter(owners)[key] for key in DAILY_EDITOR_QUOTAS} == DAILY_EDITOR_QUOTAS and plan == original
+    assert {key:Counter(owners)[key] for key in DAILY_EDITOR_QUOTAS} == editor_quotas(6) and plan == original
     # A paper's cited source takes priority over an inaccurate generic label.
     assert candidate_editor({"category": "科技动态", "source_ids": ["paper"]},
                             [{"id": "paper", "url": "https://arxiv.org/abs/2601.12345"}]) == "producer2"
@@ -66,16 +66,16 @@ def test_selection_validation_returns_ordered_ids_without_mutation():
 def test_six_topics_are_rejected_when_track_quota_or_owner_is_wrong():
     plan = briefs(); plan[1]["category"] = "论文讲解"
     with pytest.raises(ValueError, match="小影2需要0条、实际1条"):
-        validate_editor_plan(plan, [], editor_quotas())
+        validate_editor_plan(plan, [], editor_quotas(len(plan)))
     plan = briefs(); plan[1]["editor_id"] = "producer2"
     with pytest.raises(ValueError, match="负责人不符合岗位"):
-        validate_editor_plan(plan, [], editor_quotas())
+        validate_editor_plan(plan, [], editor_quotas(len(plan)))
     with pytest.raises(ValueError, match="配额"):
         validate_editor_plan(briefs(), [], {"producer": 4, "producer2": 1, "producer3": 1})
 
 
 def seed(db, plan=None, quotas=True):
-    run = FactoryRun(target_count=6, sources=[], settings_snapshot={"editor_quotas": editor_quotas()} if quotas else {})
+    run = FactoryRun(target_count=6, sources=[], settings_snapshot={"editor_quotas": editor_quotas(6)} if quotas else {})
     db.add(run); db.flush()
     items = [FactoryItem(run_id=run.id, position=index, brief=brief) for index, brief in enumerate(plan or briefs())]
     db.add_all(items); db.commit()
@@ -86,8 +86,8 @@ def test_quota_assignment_skips_deferred_and_is_idempotent(db):
     run, items = seed(db)
     deferred = FactoryItem(run_id=run.id, position=6, status="deferred", brief={"category": "论文讲解"})
     db.add(deferred); db.commit()
-    assert assign_editors(db, run.id) == DAILY_EDITOR_QUOTAS
-    assert assign_editors(db, run.id) == DAILY_EDITOR_QUOTAS
+    assert assign_editors(db, run.id) == editor_quotas(6)
+    assert assign_editors(db, run.id) == editor_quotas(6)
     assert "editor_id" not in deferred.brief
     assert db.query(FactoryEvent).filter_by(stage="editor_assignment").count() == 1
 
@@ -106,7 +106,7 @@ def test_documented_material_shortfall_admits_ready_roles_without_changing_day_t
                 'material_shortfall': {'producer': 2, 'producer2': 0, 'producer3': 1}}
     db.commit()
     assert assign_editors(db, run.id) == {'producer': 2, 'producer2': 0, 'producer3': 1}
-    assert run.target_count == 6 and run.settings_snapshot['editor_quotas'] == DAILY_EDITOR_QUOTAS
+    assert run.target_count == 6 and run.settings_snapshot['editor_quotas'] == editor_quotas(6)
     assert [item.brief['editor_id'] for item in items] == ['producer', 'producer', 'producer3']
 
 
@@ -125,7 +125,7 @@ def test_started_owner_is_kept_even_when_current_topic_classifier_differs(db):
     items[0].brief = {"category": "论文讲解", "editor_id": "producer"}
     items[0].status = "rendering"
     db.commit()
-    assert assign_editors(db, run.id) == DAILY_EDITOR_QUOTAS
+    assert assign_editors(db, run.id) == editor_quotas(6)
     assert items[0].brief["editor_id"] == "producer"
 
 
@@ -140,10 +140,10 @@ def test_legacy_started_ownership_and_deferred_drafts_are_untouched(db):
     assert "editor_id" not in items[2].brief
 
 
-def test_future_api_inputs_reject_seven_or_ten_video_plans():
+def test_future_api_inputs_reject_more_than_seven_video_plans():
     from pydantic import ValidationError
     from routers.factory import SettingsUpdate, StartRun
-    for target in (7, 10):
+    for target in (8, 10):
         with pytest.raises(ValidationError):
             StartRun(target_count=target)
         with pytest.raises(ValidationError):

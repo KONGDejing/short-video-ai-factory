@@ -5,7 +5,7 @@ from agents.registry import AGENT_MAP, EDITOR_IDS, DAILY_EDITOR_QUOTAS, DAILY_TA
 from models.factory import FactoryEvent, FactoryItem, FactoryRun
 
 
-DAILY_EDITOR_ORDER = ('producer', 'producer3', 'producer', 'producer', 'producer3', 'producer')
+DAILY_EDITOR_ORDER = ('producer', 'producer3', 'producer', 'producer', 'producer3', 'producer', 'producer3')
 
 
 def editor_id(item):
@@ -20,7 +20,7 @@ def editor_quotas(target_count=DAILY_TARGET, production_kind='daily'):
             raise ValueError('论文每周最多2条，独立排产')
         return {'producer': 0, 'producer2': target_count, 'producer3': 0}
     if type(target_count) is not int or not 1 <= target_count <= DAILY_TARGET:
-        raise ValueError('每轮日常产量应为1–6条')
+        raise ValueError('每轮日常产量应为1–7条')
     counts = Counter(DAILY_EDITOR_ORDER[:target_count])
     return {owner: counts[owner] for owner in EDITOR_IDS}
 
@@ -31,7 +31,7 @@ def _validated_quotas(quotas):
     if (not isinstance(quotas, dict) or set(quotas) != set(EDITOR_IDS)
             or any(type(quotas[owner]) is not int or not 0 <= quotas[owner] <= limits[owner] for owner in EDITOR_IDS)
             or not 1 <= sum(quotas.values()) <= (2 if weekly else DAILY_TARGET)):
-        raise ValueError('日常配额为小影最多4条、小影3最多2条；论文每周独立最多2条，不混入日常')
+        raise ValueError('日常配额为小影最多4条、小影3最多3条；论文每周独立最多2条，不混入日常')
     return dict(quotas)
 
 

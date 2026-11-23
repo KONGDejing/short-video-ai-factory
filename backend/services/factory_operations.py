@@ -9,11 +9,12 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import or_
 
 from database import SessionLocal, init_db
-from models.factory import FactoryAnalyticsSnapshot, FactoryDailyReport, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun, FactoryWorkOrder
+from models.factory import FactoryAnalyticsSnapshot, FactoryConfig, FactoryDailyReport, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun, FactoryWorkOrder
 from agents.registry import AGENTS, DAILY_TARGET
 from services import factory_analytics
 from services.factory_resources import memory_state
 from services.factory_platform_policy import analytics_enabled
+from services.factory_release_plan import scheduled_times
 
 PRIVATE = Path(__file__).resolve().parents[2] / ".runtime/operations"
 ASSIGNMENTS = {
@@ -22,10 +23,10 @@ ASSIGNMENTS = {
     "researcher3": "专门为小影3核对海外AI人物及公司重大新闻、公开言论和争议；按50人观察池及国内七家范围交接日期、证据与真实画面",
     "writer": "围绕一个问题写约150秒讲解；兑现开场承诺，结尾自然提醒关注",
     "producer": "讲解最新科技成果与AI真实落地、试验场景，以对应动态实拍为主配必要动画与AI示意，科技感强，口播与镜头对齐",
-    "producer2": "每周单独2条真实论文PPT讲解，原PDF高亮、方法与实验结果、沉稳男声；人工交付，不上抖音，不占日常6条",
+    "producer2": "每周单独人工交付2条论文解读，标注原文与结果，使用沉稳男声",
     "producer3": "独立完成分配的视频，重点打磨热点故事与剪辑节奏，核对事件画面和口播",
     "reviewer": "核查事实与观点边界、画面证据、完整口播和实际成片时长",
-    "publisher": "小影4条加小影3两条组成日常6条，新闻优先选4条自动上传抖音，同优先级随机，声明AI、署名并禁止下载；剩余2条本人手动上传快手、小红书；论文每周单独人工交付",
+    "publisher": "按排期提交抖音4条、快手2条、小红书1条，核对AI声明和平台回执",
     "analyst": "依据用户提供的官方统计与留存历史数据复盘，保留日期、周期和缺项，不自动访问账号后台",
 }
 
@@ -36,6 +37,7 @@ def stamp(value):
 
 def overview(db, now=None):
     now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("Asia/Shanghai"))
+    config = db.get(FactoryConfig, 1)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).replace(tzinfo=None)
     today_events = db.query(FactoryEvent).filter(FactoryEvent.created_at >= start).order_by(FactoryEvent.id.desc()).limit(150).all()
     assignments = []
@@ -62,17 +64,18 @@ def overview(db, now=None):
     # An unassigned editor has no failed item to trigger the old incident path.
     # Surface that production gap explicitly after the morning planning window.
     from services.factory_editorial_policy import POLICY, EDITOR_IDS
-    from services.factory_team import editor_id
+    from services.factory_team import editor_id, editor_quotas
     day_runs = db.query(FactoryRun).filter(or_(
         (FactoryRun.created_at >= start) & (FactoryRun.created_at < start + timedelta(days=1)),
         FactoryRun.id.in_({i.run_id for i in items}))).all()
     daily_ids = {r.id for r in day_runs if r.settings_snapshot.get('production_kind','daily') == 'daily'}
     items = [i for i in items if i.run_id in daily_ids]
     current_runs = {r.id for r in day_runs if r.settings_snapshot.get('distribution_policy') == POLICY
-                    and r.settings_snapshot.get('production_kind','daily') == 'daily' and r.target_count == DAILY_TARGET and r.status in {'partial', 'failed', 'completed'}}
+                    and r.settings_snapshot.get('production_kind','daily') == 'daily'
+                    and r.target_count in {6, DAILY_TARGET} and r.status in {'partial', 'failed', 'completed'}}
     if now.hour >= 6 and current_runs:
-        from agents.registry import DAILY_EDITOR_QUOTAS
-        for owner, required in DAILY_EDITOR_QUOTAS.items():
+        batch_target = max(r.target_count for r in day_runs if r.id in current_runs)
+        for owner, required in editor_quotas(batch_target).items():
             if not required:
                 continue
             assigned = sum(i.run_id in current_runs and editor_id(i) == owner for i in items)
@@ -112,12 +115,13 @@ def overview(db, now=None):
         {"name": "自然关注提醒进入口播", "owner": "小文 / 小审", "status": "已有成片验证" if follow_ready else "待成片验证", "evidence": f"今日{follow_ready}条已完成作品含关注提醒"},
         {"name": "约2分30秒内容与实际时长", "owner": "小影 / 小审", "status": "已有成片验证" if long_ready else "待样片验收", "evidence": f"今日{long_ready}条成片达到135–165秒"},
         {"name": "四个平台运营数据", "owner": "小数", "status": "已接入" if len(connected) == 4 else "部分接入", "evidence": f"{len(connected)}/4个平台取得当前官方数据"},
-        {"name": "评论读取与回复", "owner": "小麦", "status": "联调中", "evidence": "抖音/快手评论入口已检查；小红书仅支持手动查看与回复，浏览器自动化已停用。自动回复尚未通过真实回执验证"},
+        {"name": "评论读取与回复", "owner": "小麦", "status": "人工核对", "evidence": "本次自动化范围为短视频上传与提交，评论由本人查看与回复"},
     ]
     completed = sum(i.status == "completed" for i in items)
     result = {"day": now.date().isoformat(), "assignments": assignments, "alerts": alerts, "resolved_issues": resolved_issues,
               "improvements": improvements, "report_time": "22:30", "timezone": "Asia/Shanghai",
-              "summary": {"completed": completed, "target": DAILY_TARGET, "publish_target": 4,
+              "summary": {"completed": completed, "target": config.daily_target if config else DAILY_TARGET,
+                          "publish_target": len(scheduled_times(config)) if config else 4,
                           "scheduled_slots": len(slots), "ready_150_seconds": long_ready,
                           "fully_submitted_slots": sum(s.status == "submitted" for s in slots),
                           "failed_items": sum(i.status == "failed" for i in items)},

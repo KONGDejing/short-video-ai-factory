@@ -73,18 +73,16 @@ def overview(db: Session = Depends(get_db)):
         transport = publication_transport_state(platform['id'])
         connection = {}
         if state["enabled"]:
-            from services.creator_connector import connection_state
-            connection = connection_state(platform["id"])
-        publishing_enabled = bool(state["enabled"] and config["publish_enabled"] and transport.get('ready') is not False)
+            from services.factory_publishing import _connection_state
+            connection = _connection_state(platform["id"])
+        publishing_enabled = bool(state["enabled"] and platform["enabled"] and config["publish_enabled"]
+                                  and (platform["id"] != "xiaohongshu" or config["auto_publish_xiaohongshu"])
+                                  and transport.get('ready') is not False)
         platform.update(automation=state, publishing_enabled=publishing_enabled,
                         transport=transport,
                         status="paused" if state["enabled"] and not publishing_enabled else state["mode"], login_status=state["mode"],
                         account_name=connection.get("display_name"), capabilities=connection.get("capabilities", {"prepare": False, "publish": False}),
-                        description=((("每个时段到点制作一条，成片过检后自动提交抖音，必须声明AI生成。"
-                                       if config["production_on_release_clock"] else
-                                       "抖音每天从日常6条中优先选4条新闻自动发布，同级随机，必须声明AI生成。") if state["enabled"]
-                                      else "全部6条成片和文案均保留，由本人按需手动上传。") if platform["enabled"]
-                                     else "当前不参与每日短视频分发。") + state["reason"])
+                        description=state["reason"] if platform["enabled"] else "保留独立内容计划。")
     from services.factory_schedule import upcoming_releases
     from services.factory_editorial import STRATEGY
     from services.factory_visuals import library_summary
@@ -108,15 +106,20 @@ def saved_editorial_policy():
 def update_settings(data: SettingsUpdate, db: Session = Depends(get_db)):
     config = get_config(db)
     updates = data.model_dump(exclude_none=True)
-    if updates.get("auto_publish_xiaohongshu"):
-        raise HTTPException(409, "小红书由本人手动发布，不能启用自动上传或自动发布")
+    from services.factory_platform_policy import automation_enabled
+    if updates.get("auto_publish_xiaohongshu") and not automation_enabled("xiaohongshu"):
+        raise HTTPException(409, '小红书发布通道尚未启用')
     merged = {**config_dict(config), **updates}
     if len(merged['publish_times']) != 4:
-        raise HTTPException(422, '抖音每天四个时段，从日常6条中新闻优先选4条。每周研究突破单独人工交付')
+        raise HTTPException(422, '抖音每天需要四个基准时段')
+    from services.factory_release_plan import scheduled_times
+    from types import SimpleNamespace
+    clocks = scheduled_times(SimpleNamespace(**merged))
+    if len({clock for clock, _ in clocks}) != len(clocks):
+        raise HTTPException(422, '抖音基准时段与快手或小红书的时段重合')
     if merged["manual_delivery_enabled"]:
         if not config.manual_delivery_enabled:
             config.publish_start_at = datetime.utcnow()
-    updates.update(auto_publish_xiaohongshu=False)
     if updates.get("publish_enabled") and not config.publish_enabled:
         config.publish_start_at = datetime.utcnow()
     for key, value in updates.items():
@@ -293,8 +296,9 @@ def xiaohongshu_login_image():
     from services.factory_platform_policy import automation_enabled
     if not automation_enabled("xiaohongshu"):
         raise HTTPException(410, "小红书自动登录已停用，请使用官方客户端人工操作")
+    from services.xiaohongshu_connector import connection_state
     path = LOGIN_DIR / "xiaohongshu-login.png"
-    if not path.is_file():
+    if not connection_state().get("qr_ready") or not path.is_file():
         raise HTTPException(404, "登录会话尚未启动")
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
@@ -363,5 +367,33 @@ def xiaohongshu_login_page():
         return '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>小红书人工发布</title><main><a href="/">返回内容工厂</a><h1>小红书自动化已停用</h1><p>请下载分配给小红书的视频素材包，通过官方客户端人工发布。此页面不会启动登录浏览器、刷新二维码或读取小红书账号。</p></main></html>'
     return """<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>小红书登录 · 短视频 AI 内容工厂</title><style>body{margin:0;background:#0b121a;color:#e5edf4;font:16px system-ui,sans-serif}main{max-width:1100px;margin:40px auto;padding:20px}h1{font-size:25px}p{color:#a8bac7;line-height:1.8}img{width:100%;border-radius:16px;background:white}a{color:#73edc7}strong{color:#73edc7}</style>
-<main><a href="/">← 返回工厂</a><h1>连接小红书创作平台</h1><p>用小红书 App 扫描下图中的二维码，并在手机上确认登录。二维码来自官方创作平台的真实浏览器会话。<br>登录状态：<strong id="state">正在读取</strong></p><button onclick="connect()" style="padding:12px 20px;margin-bottom:20px;cursor:pointer">启动登录 / 刷新二维码</button><img id="qr" alt="小红书官方登录二维码" src="/api/factory/platforms/xiaohongshu/login-image"><p>已登录时会保留当前账号。若平台要求额外验证，请按手机或官方页面提示完成。</p></main>
-<script>async function refresh(){try{const r=await fetch('/api/factory/platforms/xiaohongshu/login-state',{cache:'no-store'});const s=await r.json();document.getElementById('state').textContent=s.status+(s.display_name?' · '+s.display_name:'');document.getElementById('qr').src='/api/factory/platforms/xiaohongshu/login-image?t='+Date.now()}catch(e){document.getElementById('state').textContent='暂时无法连接'}}async function connect(){document.getElementById('state').textContent='正在打开官方登录会话';await fetch('/api/factory/platforms/xiaohongshu/connect',{method:'POST'});setTimeout(refresh,3000)}refresh();setInterval(refresh,10000)</script></html>"""
+<main><a href="/">← 返回工厂</a><h1>连接小红书创作平台</h1><p>用小红书 App 扫描下图中的二维码，并在手机上确认登录。二维码来自官方创作平台的真实浏览器会话。<br>登录状态：<strong id="state">正在读取</strong></p><button onclick="connect()" style="padding:12px 20px;margin-bottom:20px;cursor:pointer">启动登录 / 刷新二维码</button><img id="qr" alt="小红书官方登录二维码" hidden><p>已登录时会保留当前账号。若平台要求额外验证，请按手机或官方页面提示完成。</p></main>
+<script>
+async function refresh() {
+  const label = document.getElementById('state');
+  const qr = document.getElementById('qr');
+  try {
+    const response = await fetch('/api/factory/platforms/xiaohongshu/login-state', {cache: 'no-store'});
+    const state = await response.json();
+    label.textContent = state.status + (state.display_name ? ' · ' + state.display_name : '');
+    qr.hidden = state.qr_ready !== true;
+    if (!qr.hidden) qr.src = '/api/factory/platforms/xiaohongshu/login-image?t=' + Date.now();
+    else qr.removeAttribute('src');
+  } catch (error) {
+    qr.hidden = true;
+    label.textContent = '暂时无法连接';
+  }
+}
+async function connect() {
+  document.getElementById('state').textContent = '正在打开官方登录会话';
+  try {
+    const response = await fetch('/api/factory/platforms/xiaohongshu/connect', {method: 'POST'});
+    if (!response.ok) throw new Error();
+    setTimeout(refresh, 2000);
+  } catch (error) {
+    document.getElementById('state').textContent = '启动未完成，请检查登录状态';
+  }
+}
+refresh();
+setInterval(refresh, 5000);
+</script></html>"""

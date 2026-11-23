@@ -17,8 +17,10 @@ PLATFORM_STYLES = {
 }
 
 
-def platform_style(platform):
+def platform_style(platform, *, shared=False):
     style = deepcopy(PLATFORM_STYLES.get(platform, {}))
+    if shared and style:
+        style = {**deepcopy(PLATFORM_STYLES['douyin']), 'platform': platform, 'name': style['name']}
     if style:
         style['opening_brief'] += ' 封面大标题放中上部，避开底部文案及右侧按钮，保持大字号和清晰对比；不能把主标题放在底部。'
     return style

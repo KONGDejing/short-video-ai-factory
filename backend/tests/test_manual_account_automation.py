@@ -81,7 +81,7 @@ def test_direct_script_paths_exit_cleanly_without_pythonpath(tmp_path, platform,
     assert "Traceback" not in result.stderr
 
 
-@pytest.mark.parametrize("platform", (*PLATFORMS, "xiaohongshu"))
+@pytest.mark.parametrize("platform", PLATFORMS)
 def test_identity_token_capture_and_input_blocked_before_files_or_browser(monkeypatch, platform):
     forbidden = Mock(side_effect=AssertionError("Manual mode must not reach the browser or token files"))
     monkeypatch.setattr(connector, "_directories", forbidden)

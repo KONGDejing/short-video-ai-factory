@@ -8,6 +8,7 @@ from database import SessionLocal
 from models.factory import FactoryItem, FactoryPublication, FactoryEvent, FactoryRun
 from services.factory_resources import ensure_memory_available
 from services.factory_distribution import guard_publication, RESERVATION_KEY
+from services.factory_release_plan import AI_DISCLOSURE
 from services.factory_platform_policy import require_automation
 from services.factory_branding import require_owner_attribution
 
@@ -168,6 +169,8 @@ def _begin_publication(db, item_id, action, platform):
     config = get_config(db)
     if platform not in config.platforms:
         raise ValueError(f"{platform_name}已暂停短视频发布，不在当前发行计划中")
+    if platform == 'xiaohongshu' and not config.auto_publish_xiaohongshu:
+        raise ValueError('小红书自动发布当前已暂停')
     if item.status != "completed" or not item.media.get("video_path"):
         raise ValueError("需要先完成视频制作、审核与平台素材包")
     if item.media.get("publication_hold"):
@@ -221,18 +224,18 @@ def _begin_publication(db, item_id, action, platform):
                 action="publish", status="submitted").first()
             if receipt is None:
                 raise ValueError("平台已有作品上传待发布或待核验，不能覆盖当前页面")
-    if platform != "xiaohongshu":
-        state = _connection_state(platform)
-        if not state.get("authenticated"):
-            raise ValueError(f"请先在{platform_name}官方页面扫码并完成账号核验")
-        if state.get("capabilities", {}).get(action) is not True:
-            step = "上传" if action == "prepare" else "发布"
-            raise ValueError(f"{platform_name}{step}页面尚未完成真实联调，未创建操作任务")
+    state = _connection_state(platform)
+    if not state.get("authenticated"):
+        raise ValueError(f"请先在{platform_name}官方页面扫码并完成账号核验")
+    if state.get("capabilities", {}).get(action) is not True:
+        step = "上传" if action == "prepare" else "发布"
+        raise ValueError(f"{platform_name}{step}页面尚未完成真实联调，未创建操作任务")
     ensure_memory_available()
-    if platform == 'douyin':
+    if platform == 'douyin' or (item.brief.get('distribution') or {}).get('release_plan'):
         if not (variant.get('video_path') and variant.get('cover_path')):
-            raise ValueError('抖音必须上传最终交付成片与定稿封面，请先完成平台打包')
-        require_owner_attribution(variant)
+            raise ValueError('必须使用平台最终成片与定稿封面')
+        if platform == 'douyin':
+            require_owner_attribution(variant)
     payload = {"item_id": item.id}
     if item.media.get('submission_revision'):
         payload['submission_revision'] = item.media['submission_revision']
@@ -244,8 +247,12 @@ def _begin_publication(db, item_id, action, platform):
         if platform == 'douyin':
             from services.factory_short_caption import compact_douyin_caption
             caption, tags = compact_douyin_caption(variant)
-        elif platform == 'kuaishou':
-            caption = caption.rstrip() + "\n\n内容由AI生成（AI辅助文案、配音与剪辑；原始资料与演示来源见正文）。"
+        elif platform in {'kuaishou', 'xiaohongshu'}:
+            from services.factory_short_caption import compact_douyin_caption
+            caption, tags = compact_douyin_caption(variant)
+            caption = f"{caption.rstrip()} {AI_DISCLOSURE}"
+            if platform == 'kuaishou':
+                tags = tags[:4]
         payload.update(video_path=variant.get("video_path") or item.media["video_path"],
                        cover_path=variant.get("cover_path") or item.media["cover_path"],
                        title=variant["title"], caption=caption, tags=tags, ai_generated=True)

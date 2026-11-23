@@ -517,12 +517,14 @@
     }
   ],
   "production": {
-    "daily_total": 6,
+    "daily_total": 7,
     "duration_seconds_about": 150,
     "douyin_daily_total": 4,
     "douyin_per_editor": null,
     "automatic_platforms": [
-      "douyin"
+      "douyin",
+      "kuaishou",
+      "xiaohongshu"
     ],
     "manual_platforms": [
       "xiaohongshu",
@@ -537,21 +539,23 @@
       "22:00"
     ],
     "publish_jitter_seconds": 900,
-    "kuaishou_daily_total": 0,
-    "kuaishou_auto_policy": null,
+    "kuaishou_daily_total": 2,
+    "xiaohongshu_daily_total": 1,
+    "kuaishou_auto_policy": "three-platform-v1",
     "archive_copy_platforms": [
       "xiaohongshu",
       "kuaishou"
     ],
-    "kuaishou_publish_times": [],
+    "kuaishou_publish_times": ["07:20", "09:00"],
+    "xiaohongshu_publish_times": ["08:10"],
     "automatic_cross_platform_reuse": false,
     "editor_daily_quotas": {
       "producer": 4,
       "producer2": 0,
-      "producer3": 2
+      "producer3": 3
     },
     "douyin_selection": "persisted_recent_news_then_random_non_paper",
-    "manual_remaining_per_day": 2,
+    "manual_remaining_per_day": 0,
     "weekly_papers": {
       "total": 2,
       "weekdays": [
@@ -561,7 +565,7 @@
       "per_day": 1,
       "production_time": "10:00",
       "manual_only": true,
-      "extra_to_daily_six": true
+      "extra_to_daily_shorts": true
     }
   },
   "notes": [
@@ -571,15 +575,15 @@
     "国内公司及人物新闻严格限于指定七家；其他国内公司负责人不纳入本观察池。",
     "同一家公司的内容按核心问题分工：论文由小影2，前沿科技成果与AI真实落地场景由小影，公司人物发生什么由小影3。",
     "三个剪辑师共享轻松看科技新闻的表达，采用赛博朋克暗底、青色标题和少量紫红装饰。真实素材保持自然颜色，各自独立口播与对应镜头。",
-    "日常每天小影4条、小影3两条，均约150秒；小影学习新智元的真实科技场景叙事与剪辑，不只更换封面。",
-    "抖音从日常6条非论文作品中优先选择有近期事实原文的科技新闻，同优先级无放回随机补齐4条，结果持久保存。用户明确指定的当日作品优先固定。",
-    "剩余2条由本人手动上传，快手和小红书账号自动化关闭；全部6条完整保存。",
-    "小影2每周周三、周六各做1条论文，额外独立排产、人工交付，不占日常6条、不上传抖音。"
+    "日常每天小影4条、小影3三条，均约150秒；小影学习新智元的真实科技场景叙事与剪辑，不只更换封面。",
+    "日常非论文短视频按时段分配唯一平台。选题优先近期可核实的新闻和真实科技场景。",
+    "抖音每日4条、快手2条、小红书1条，每条原创只走一个自动发布平台，统一采用抖音成片风格；全部7条完整保存。",
+    "小影2每周周三、周六各做1条论文，额外独立排产、人工交付，不占日常7条、不上传抖音。"
   ],
   "version": 5,
   "approved_on": "2026-11-17",
   "distribution_policy": "douyin-four-random-v1",
-  "kuaishou_auto_policy": null,
+  "kuaishou_auto_policy": "three-platform-v1",
   "visual_reference": {
     "account": "新智元",
     "actual_samples": [

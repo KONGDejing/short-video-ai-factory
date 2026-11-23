@@ -33,17 +33,21 @@ def iso(value):
 
 def config_dict(config):
     from services.factory_platform_policy import automation_state
-    from services.factory_kuaishou_policy import POLICY as K_POLICY, PUBLISH_TIMES
+    from services.factory_release_plan import ADDITIONAL_TIMES, DAILY_OUTPUT, PLATFORM_LIMITS, THREE_PLATFORM_PLAN
     keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times", "manual_delivery_enabled", "production_on_release_clock")
     return {**{key: getattr(config, key) for key in (*keys, "publish_jitter_seconds")},
-            "editor_quotas": editor_quotas(min(config.daily_target, 6)),
+            "editor_quotas": editor_quotas(min(config.daily_target, DAILY_OUTPUT)),
             "distribution_policy": POLICY, "platform_daily_limit": 4,
             "douyin_per_editor": None, "manual_platforms": ["xiaohongshu", "kuaishou"], "editorial_policy_version": 5,
             "production_kind": "daily", "weekly_paper_target": 2, "weekly_paper_weekdays": [2, 5],
             'caption_safety_required': True,
             'news_first': True,
             'cyberpunk_style': True,
-            "kuaishou_auto_policy": None, "kuaishou_daily_limit": 0, "kuaishou_publish_times": [],
+            "release_plan": THREE_PLATFORM_PLAN if config.daily_target == DAILY_OUTPUT else None,
+            "platform_daily_limits": dict(PLATFORM_LIMITS),
+            "kuaishou_daily_limit": PLATFORM_LIMITS["kuaishou"],
+            "kuaishou_publish_times": list(ADDITIONAL_TIMES["kuaishou"]),
+            "xiaohongshu_publish_times": list(ADDITIONAL_TIMES["xiaohongshu"]),
             "platform_automation": {p: automation_state(p) for p in config.platforms}}
 
 
@@ -110,19 +114,21 @@ def run_detail(db, run):
                 revision_view[key + '_url'] = storage_url(settings.STORAGE_DIR / value) if value else None
         from services.factory_platform_policy import automation_state, effective_automation_enabled
         route = (item.brief or {}).get('distribution') or {}
-        selected = route.get('policy') == POLICY and route.get('douyin_selected') is True
+        from services.factory_release_plan import THREE_PLATFORM_PLAN
         from services.factory_caption_layout import preferred_douyin_variant
         display_variant = preferred_douyin_variant(item) or {}
         packages = []
         for package in item.packages or []:
-            state = automation_state(package['platform'])
-            if package['platform'] == 'douyin' and not selected:
-                state = {**state, 'enabled': False, 'mode': 'archive', 'reason': '历史或未入选的抖音文案，仅保留归档，不创建自动上传任务。'}
-            if package['platform'] == 'kuaishou' and not route.get('kuaishou_selected'):
-                state = {**state, 'enabled': False, 'mode': 'archive', 'reason': '快手改为本人手动上传；保留完整成片和文案，不创建账号自动化任务。'}
-            packages.append({**package, 'download_url': f"/api/factory/items/{item.id}/packages/{package['platform']}",
-                'automation': state, 'publishing_enabled': bool(publishing_enabled and state['enabled']
-                    and effective_automation_enabled(package['platform'])), 'copy_url': storage_url(package.get('copy_path'))})
+            platform = package['platform']
+            state = automation_state(platform)
+            selected = (route.get('policy') == POLICY and route.get(f'{platform}_selected') is True
+                        and (platform == 'douyin' or route.get('release_plan') == THREE_PLATFORM_PLAN))
+            if not selected:
+                state = {**state, 'enabled': False, 'mode': 'archive', 'reason': '完整成片和文案已归档。'}
+            can_publish = (publishing_enabled and state['enabled'] and effective_automation_enabled(platform)
+                           and (platform != 'xiaohongshu' or current_config.auto_publish_xiaohongshu))
+            packages.append({**package, 'download_url': f"/api/factory/items/{item.id}/packages/{platform}",
+                'automation': state, 'publishing_enabled': bool(can_publish), 'copy_url': storage_url(package.get('copy_path'))})
         publication = db.query(FactoryPublication).filter_by(item_id=item.id, platform="xiaohongshu").order_by(FactoryPublication.created_at.desc()).first()
         from services.factory_publishing import job_dict
         publications = db.query(FactoryPublication).filter_by(item_id=item.id).order_by(
@@ -208,24 +214,24 @@ def queue_available():
 
 
 def start_run(db, target_count=None, trigger="manual", schedule_key=None, release_slot_ids=None, editor_quota_override=None, production_kind="daily", enqueue=True):
+    from services.factory_release_plan import DAILY_OUTPUT
     config = config_dict(get_config(db))
     target = target_count or config["daily_target"]
     if config['visual_style'] != 'tech_montage':
         raise ValueError('新的三方向制作不使用统一文字卡片；请选择科技成果/论文/新闻对应的真实素材模式')
-    if not 1 <= target <= 6:
-        raise ValueError("每轮产量应为 1–6 条")
+    if not 1 <= target <= DAILY_OUTPUT:
+        raise ValueError("每轮产量应为 1–7 条")
     if production_kind not in {'daily', 'weekly_papers'}:
         raise ValueError('未知排产类型')
     config['production_kind'] = production_kind
     config["editor_quotas"] = editor_quotas(target, production_kind)
-    limits = {'producer': 0, 'producer2': 2, 'producer3': 0} if production_kind == 'weekly_papers' else {'producer':4,'producer2':0,'producer3':2}
+    limits = {'producer': 0, 'producer2': 2, 'producer3': 0} if production_kind == 'weekly_papers' else {'producer':4,'producer2':0,'producer3':3}
     if editor_quota_override is not None:
         if (set(editor_quota_override) != set(config["editor_quotas"])
                 or any(type(v) is not int or not 0 <= v <= limits[k] for k,v in editor_quota_override.items())
                 or sum(editor_quota_override.values()) != target):
-            raise ValueError("配额必须符合小影4条、小影3两条，或独立每周论文最多2条")
+            raise ValueError("配额必须符合小影4条、小影3三条，或独立每周论文最多2条")
         config["editor_quotas"] = dict(editor_quota_override)
-    config["auto_publish_xiaohongshu"] = False
     config["publish_enabled"] = False
     config["max_llm_calls"] = max(config["max_llm_calls"], target * 12 + 12)
     config["engagement_required"] = True
@@ -274,8 +280,8 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
         weekly_target += len(credited)
     if production_kind == 'weekly_papers' and weekly_target + target > 2:
         raise ValueError('本周2条论文名额已预留，请恢复原论文批次，不能重复加产')
-    if production_kind == 'daily' and used_target + target > 6:
-        raise ValueError('当天6条原创生产名额已预留；请恢复原批次或显式调整未开工计划，避免自动加产')
+    if production_kind == 'daily' and used_target + target > DAILY_OUTPUT:
+        raise ValueError('当天7条原创生产名额已预留；请恢复原批次或显式调整未开工计划，避免自动加产')
     config['production_day'] = production_day
     pressure = None
     try:
@@ -757,7 +763,8 @@ def _write_and_review(run_id, item_id):
         recent_prompts = [i.content.get("follow_prompt") for i in db.query(FactoryItem).filter(
             FactoryItem.status == "completed").order_by(FactoryItem.created_at.desc()).limit(10) if i.content.get("follow_prompt")]
     from services.factory_platform_style import platform_style
-    style = platform_style((brief.get("distribution") or {}).get("platform"))
+    route = brief.get('distribution') or {}
+    style = platform_style(route.get('platform'), shared=bool(route.get('release_plan')))
     if style:
         brief = {**brief, "platform_style": style}
         _save_item(item_id, brief=brief)
@@ -1207,6 +1214,7 @@ def _package(run_id, item_id):
         video_filename = safe_filename(content["title"], ".mp4")
         platforms = run.settings_snapshot["platforms"]
         route = item.brief.get("distribution") or {}
+        shared = bool(route.get('release_plan'))
         if route.get("day"):
             signature = "".join(c.casefold() for c in content.get("script", "") if c.isalnum())
             for other in db.query(FactoryItem).filter(FactoryItem.id != item.id, FactoryItem.status != "deferred"):
@@ -1216,7 +1224,7 @@ def _package(run_id, item_id):
         new_distribution = run.settings_snapshot.get('distribution_policy') == POLICY
         if new_distribution:
             if route.get('policy') != POLICY:
-                raise ValueError('本条尚未确定非论文6选4与每周论文人工交付计划')
+                raise ValueError('本条尚未确定发布平台或每周人工交付计划')
             platforms = ['xiaohongshu', 'kuaishou'] if run.settings_snapshot.get('production_kind') == 'weekly_papers' else ['xiaohongshu', 'kuaishou', 'douyin']
             existing = [p for p in existing if p['platform'] in platforms]
         elif route:
@@ -1230,14 +1238,14 @@ def _package(run_id, item_id):
             brand = branding_for(p['platform'])
             return (design.get('version') == COVER_DESIGN_VERSION
                     and quality.get('caption_safe_area_version', 0) == caption_safe_version
-                    and (platform_style(p['platform']).get('opening_mode') != 'first_frame_title'
+                    and (platform_style(p['platform'], shared=shared).get('opening_mode') != 'first_frame_title'
                          or (design.get('frame_title_version') == FRAME_TITLE_VERSION
                              and design.get('headline_palette', 'standard') == ('cyberpunk' if cyberpunk else 'standard')
                              and design.get('platform') == p['platform']
                              and design.get('text_rendered') == content['title']
-                             and (p['platform'] != 'douyin' or design.get('lines') == frame_title_layout(content['title'], p['platform'], caption_safe_area=bool(caption_safe_version))[1])
+                             and (p['platform'] != 'douyin' and not shared or design.get('lines') == frame_title_layout(content['title'], 'douyin', caption_safe_area=bool(caption_safe_version))[1])
                              and quality.get('opening_mode') == 'first_frame_title'))
-                    and (p['platform'] != 'douyin' or (quality.get('persistent_title') is (content.get('editor_id') != 'producer2')
+                    and (p['platform'] != 'douyin' and not shared or (quality.get('persistent_title') is (content.get('editor_id') != 'producer2')
                          and (not brand or (quality.get('branding_signature') == brand['signature']
                               and quality.get('source_attribution_integrated') is True))))
                     and p.get('source_media_fingerprint') == media.get('fingerprint')
@@ -1285,8 +1293,8 @@ def _package(run_id, item_id):
     else:
         publication_content = {k: content[k] for k in ("title", "script", "hook", "follow_prompt", "follow_value", "sources", "engagement_plan", "platform_style") if k in content}
         adapted = call_agent(run_id, "publisher", {"content": publication_content, "platforms": platforms,
-            "platform_styles": {p: platform_style(p) for p in platforms},
-            "delivery_mode": ("weekly_paper_manual_only" if run.settings_snapshot.get("production_kind") == "weekly_papers" else "douyin_auto_with_full_manual_archive") if new_distribution else "manual", "instruction": "只能重组本条已审核口播的事实；完整交付manual_handoff字段。不要增加未实测结论，不假冒观众留言。"}, max_tokens=6000 if new_distribution else 3000,
+            "platform_styles": {p: platform_style(p, shared=shared) for p in platforms},
+            "delivery_mode": ("weekly_paper_manual_only" if run.settings_snapshot.get("production_kind") == "weekly_papers" else "scheduled_platform_with_full_archive") if new_distribution else "manual", "instruction": "只能重组本条已审核口播的事实；完整交付manual_handoff字段。不要增加未实测结论，不假冒观众留言。"}, max_tokens=6000 if new_distribution else 3000,
                              work_kind="rework" if existing else "initial")
         variants = adapted.get("platforms", [])
     if not isinstance(variants, list) or len(variants) != len(platforms) or {p.get("platform") for p in variants} != set(platforms):
@@ -1311,10 +1319,12 @@ def _package(run_id, item_id):
             caption,tags=compact_douyin_caption(variant)
             variant={**variant,'caption':caption,'tags':tags}
         handoff = build_handoff(content, variant, route, warnings.get(platform))
-        style = platform_style(platform)
+        style = platform_style(platform, shared=shared)
         frame_title = style.get("opening_mode") == "first_frame_title"
         design_suffix = f"design{COVER_DESIGN_VERSION}" + (f"-firstframe{FRAME_TITLE_VERSION}" if frame_title else "")
         brand = branding_for(platform)
+        if shared:
+            design_suffix += '-shared-douyin'
         if platform == 'douyin':
             design_suffix += '-editorial2' + ('-owner' + brand['signature'][:10] if brand else '')
         if caption_safe_version:
@@ -1331,8 +1341,9 @@ def _package(run_id, item_id):
             cover_options = {'caption_safe_area': True} if caption_safe_version else {}
             if cyberpunk:
                 cover_options['cyberpunk'] = True
-            cover_design = render_frame_cover(media["video_path"], content["title"], cover_path, platform,
-                                             **cover_options)
+            cover_design = render_frame_cover(media["video_path"], content["title"], cover_path,
+                                              "douyin" if shared else platform, **cover_options)
+            cover_design["platform"] = platform
         else:
             from services.factory_cover import render_cover
             cover_design = render_cover({**content, "cover_text": handoff["cover_text"], "platform_style": style}, cover_path)
@@ -1341,7 +1352,7 @@ def _package(run_id, item_id):
         finish_options = {"opening_mode": "first_frame_title", "title_overlay": cover_design["overlay_path"]} if frame_title else {}
         if caption_safe_version:
             finish_options['caption_safe_area_version'] = caption_safe_version
-        if platform == 'douyin':
+        if platform == 'douyin' or shared:
             paper_style = content.get('editor_id') == 'producer2'
             finish_options.update(persistent_title=not paper_style, branding=brand,
                                   attribution_y=1760 if paper_style else 1420 if caption_safe_version else 700)
@@ -1355,7 +1366,7 @@ def _package(run_id, item_id):
                     "cover_design": {k: v for k, v in cover_design.items() if k not in {"design_path", "overlay_path"}},
                     "source_item_id": item_id, "sources": content.get("sources", []),
                     "visual_sources": media.get("visual_sources", []),
-                    "note": "本包仅代表素材交付，不代表平台发布状态。请在官方客户端人工核对、上传并发布到分配的平台。"}
+                    "note": "本包含成片与发布文案。实际提交和公开状态见内容工厂。"}
         # Versioned output keeps previously delivered archives intact on upgrade.
         path = directory / f"{platform}-manual-v{HANDOFF_VERSION}-{design_suffix}.zip"
         temp = path.with_suffix(".zip.tmp")

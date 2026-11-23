@@ -1,4 +1,4 @@
-"""The owner authorizes Douyin and Kuaishou publishing; other accounts remain manual.
+"""The owner authorizes short-video publishing on three creator accounts.
 
 Credentials and generic switches cannot enable another platform. The runtime
 publish switch separately pauses scheduled uploads without changing this scope.
@@ -13,7 +13,9 @@ class AutomationDisabled(ValueError):
     """The requested platform supports manual operation only."""
 
 
-AUTOMATED_PLATFORMS = frozenset({"douyin"})
+from services.factory_release_plan import PLATFORM_LIMITS
+
+AUTOMATED_PLATFORMS = frozenset(PLATFORM_LIMITS)
 
 
 def automation_enabled(platform):
@@ -49,8 +51,8 @@ def automation_state(platform):
         "platform": platform,
         "mode": "automated" if enabled else "manual",
         "enabled": enabled,
-        "reason": ('抖音每天从6条日常原创中优先选近期新闻发布4条，同优先级随机并保存结果；必须声明AI生成、署名并禁止下载，官方核验时暂停提示。'
-                   if enabled else '账号自动化已停用；剩余2条由本人手动上传快手或小红书，全部成片与文案保留。'),
+        "reason": (f'日常排期每天{PLATFORM_LIMITS[platform]}条独立原创，提交时声明AI制作，保留官方回执。'
+                   if enabled else '账号自动化已停用，由本人使用平台官方客户端发布。'),
     }
 
 

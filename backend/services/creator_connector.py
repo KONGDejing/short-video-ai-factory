@@ -22,11 +22,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-if __package__:
-    from services.factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
-else:
-    # Historical user services execute this file directly, without PYTHONPATH.
-    from factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from services.factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / ".runtime" / "creator-connectors"

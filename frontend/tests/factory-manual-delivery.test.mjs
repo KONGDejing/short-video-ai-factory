@@ -29,14 +29,14 @@ const handoff = {
   publication_warning: '历史提交结果不确定，请本人先核对', distribution: { platform: 'douyin', day: '2026-11-11' },
 }
 
-test('saving a plan preserves Douyin publishing and keeps Xiaohongshu manual', () => {
+test('saving a plan preserves the Xiaohongshu publishing switch', () => {
   let saved
   const form = SettingsPanel({ settings: { daily_target: 6, manual_delivery_enabled: true,
     publish_enabled: true, auto_publish_xiaohongshu: true }, onSave: value => { saved = value } })
   form.props.onSubmit({ preventDefault() {} })
   assert.equal(saved.manual_delivery_enabled, true)
   assert.equal(saved.publish_enabled, true)
-  assert.equal(saved.auto_publish_xiaohongshu, false)
+  assert.equal(saved.auto_publish_xiaohongshu, true)
   assert.match(renderToStaticMarkup(form), /启用人工交付计划/)
 })
 
@@ -72,21 +72,20 @@ test('schedule is visible for either Douyin publishing or manual delivery', () =
   const props = { target: 6, releases: [{ id: 'fixture', status: 'manual_ready', platforms: ['douyin'],
     due_at: '2026-11-11T00:00:00+08:00', nominal_at: '2026-11-11T00:00:00+08:00' }] }
   assert.equal(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: false } }), '')
-  assert.match(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: true } }), /自动发布：抖音新闻优先选4条/)
+  assert.match(render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: false, publish_enabled: true } }), /抖音4条 · 快手2条 · 小红书1条/)
   const html = render(ManualDeliveryPlan, { ...props, settings: { manual_delivery_enabled: true, publish_enabled: false } })
   assert.match(html, /发布与交付计划/)
-  assert.match(html, /建议发布时间/)
+  assert.match(html, /快手/)
   assert.match(html, /全部成片/)
-  assert.match(html, /抖音新闻优先选4条/)
+  assert.match(html, /抖音4条/)
 })
 
 test('connection effects cannot poll even with legacy enabled account data', () => {
   effects.length = 0
   const html = render(ManualPlatformChannels, { platforms: ['douyin', 'kuaishou', 'xiaohongshu', 'bilibili'].map(id => ({
-    id, status: 'connected', automation: { enabled: !['douyin', 'kuaishou'].includes(id) },
+    id, status: 'connected', automation: { enabled: id === 'bilibili' },
   })) })
   assert.doesNotMatch(html, /扫码登录|刷新登录状态|\/login/)
-  assert.match(html, /小红书由本人操作/)
   assert.equal(effects.length, 4)
   for (const effect of effects) {
     const cleanup = effect()
@@ -136,12 +135,12 @@ test('legacy copy uses existing text and the cover is an optional archive', () =
 })
 
 
-test('Douyin and Kuaishou render authorized login controls while other platforms stay manual', () => {
-  const html = render(ManualPlatformChannels, { platforms: ['douyin', 'kuaishou', 'xiaohongshu', 'bilibili'].map(id => ({ id, automation: { enabled: true } })) })
+test('Three short-video platforms render login controls while Bilibili stays manual', () => {
+  const html = render(ManualPlatformChannels, { platforms: ['douyin', 'kuaishou', 'xiaohongshu', 'bilibili'].map(id => ({ id, automation: { enabled: id !== 'bilibili' }, status: id === 'bilibili' ? 'manual' : 'automated' })) })
   assert.match(html, /抖音自动|自动发布/)
   assert.match(html, /\/platforms\/douyin\/login/)
-  for (const id of ['kuaishou', 'xiaohongshu', 'bilibili']) assert.ok(!html.includes(`/platforms/${id}/login`))
-  assert.match(html, /必须选择官方AI生成声明/)
+  for (const id of ['kuaishou', 'xiaohongshu']) assert.ok(html.includes(`/platforms/${id}/login`))
+  assert.ok(!html.includes('/platforms/bilibili/login'))
 })
 
 
@@ -153,12 +152,12 @@ test('Douyin package explains automatic delivery instead of asking the owner to 
   assert.match(html, /避免重复上传/)
 })
 
-test('Kuaishou transport failure is visible and does not open a login poll', () => {
+test('Kuaishou transport failure is visible in the release channel', () => {
   effects.length = 0
   const html = render(ManualPlatformChannels, { platforms: [{ id: 'kuaishou',
     automation: { enabled: true }, publishing_enabled: false,
     transport: { ready: false, reason: '北京快手HTTPS连接中断' } }] })
-  assert.match(html, /手动/); assert.doesNotMatch(html, /\/platforms\/kuaishou\/login/)
+  assert.match(html, /北京快手HTTPS连接中断/)
   for (const effect of effects) {
     const cleanup = effect()
     if (cleanup) cleanup()

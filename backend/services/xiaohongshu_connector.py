@@ -19,11 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-if __package__:
-    from services.factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
-else:
-    # The historical systemd unit executes this file directly, without PYTHONPATH.
-    from factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from services.factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = PROJECT_ROOT / ".runtime"
@@ -126,11 +124,21 @@ def connection_state() -> dict:
                 "prepared_item_id": state.get("prepared_item_id"),
                 "capabilities": {name: False for name in ("login", "inspect", "prepare", "publish", "analytics")}}
     active = _alive()
+    authenticated = active and bool(state.get("authenticated"))
+    try:
+        age = time.time() - LOGIN_IMAGE.stat().st_mtime
+        qr_ready = active and not authenticated and state.get("qr_ready") is True and 0 <= age <= 45
+    except OSError:
+        qr_ready = False
     return {
+        "platform": "xiaohongshu",
         "status": state.get("status", "未连接") if active else "连接器未运行",
+        "state_code": "authenticated" if authenticated else "waiting_scan" if active else "stopped",
         "display_name": state.get("display_name"),
         "account_id": state.get("account_id"),
-        "authenticated": bool(state.get("authenticated")) and active,
+        "authenticated": authenticated,
+        "capabilities": {"login": True, "prepare": authenticated, "publish": authenticated},
+        "qr_ready": qr_ready,
         "session_active": active and bool(state.get("session_active")),
         "url": state.get("url"),
         "error": state.get("error"),
@@ -333,15 +341,18 @@ class _Browser:
             status = "需要手机确认"
         if not authenticated and any(s in body for s in ("二维码已失效", "二维码已过期", "二维码过期", "二维码失效")):
             status = "二维码已过期"
+        qr_ready = (not authenticated and status == "等待扫码" and address.hostname == "creator.xiaohongshu.com"
+                    and address.path == "/login" and any(text in body for text in ("扫码登录", "APP扫一扫登录")))
         state = {"status": status, "display_name": name, "account_id": old.get("account_id") if authenticated else None,
                  "authenticated": authenticated, "session_active": True, "error": None,
-                 "url": _clean_url(page.url), "updated_at": _now(),
+                 "url": _clean_url(page.url), "updated_at": _now(), "qr_ready": qr_ready,
                  "prepared_item_id": self.prepared["item_id"] if self.prepared else None}
+        if qr_ready:
+            temporary = LOGIN_IMAGE.with_suffix(".tmp.png")
+            page.screenshot(path=str(temporary), full_page=True)
+            temporary.chmod(0o600)
+            temporary.replace(LOGIN_IMAGE)
         _write(STATE_FILE, state)
-        # Only the official login page can become the publicly displayed image.
-        if address.path == "/login":
-            page.screenshot(path=str(LOGIN_IMAGE), full_page=True)
-            LOGIN_IMAGE.chmod(0o600)
         return state
 
     def login(self):
@@ -355,11 +366,14 @@ class _Browser:
         except Exception:
             pass
         if "短信登录" in self.page.locator("body").inner_text():
-            self.page.mouse.click(1280, 350)
-            self.page.get_by_text("APP扫一扫登录", exact=True).wait_for(timeout=15000)
+            if not self.page.get_by_text("APP扫一扫登录", exact=True).is_visible():
+                self.page.mouse.click(1280, 350)
+                self.page.get_by_text("APP扫一扫登录", exact=True).wait_for(timeout=15000)
         self.page.wait_for_timeout(1000)
-        self.inspect()
-        return {"status": "prepared", "message": "官方二维码已更新，请用小红书 App 扫码并确认"}
+        state = self.inspect()
+        if not state["authenticated"] and not state.get("qr_ready"):
+            raise ValueError("官方页面暂未显示可扫码二维码，请刷新登录页")
+        return {"status": "prepared", "message": "官方登录状态已更新"}
 
     def _editor(self):
         self.page.goto(OFFICIAL_HOME, wait_until="domcontentloaded", timeout=45000)

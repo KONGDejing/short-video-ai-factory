@@ -23,7 +23,6 @@ def env(tmp_path, monkeypatch):
     from services import factory_platform_policy
     monkeypatch.setattr(factory_platform_policy, "automation_enabled", lambda platform: True)
     monkeypatch.setattr(factory_platform_policy, "publication_transport_state", lambda platform: {'ready': True})
-    monkeypatch.setattr(schedule, "plan_kuaishou_slots", lambda *args: None)  # Isolate legacy Douyin clock cases.
     engine = create_engine(f"sqlite:///{tmp_path / 'clock.db'}")
     Base.metadata.create_all(engine, tables=[m.__table__ for m in
         (FactoryConfig, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun)])
@@ -33,7 +32,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(schedule.publishing, "_connection_state", lambda platform: {
         "authenticated": True, "prepared_item_id": "item", "capabilities": {"prepare": True, "publish": True}})
     with sessions() as db:
-        config = FactoryConfig(id=1, daily_target=6, publish_enabled=True,
+        config = FactoryConfig(id=1, daily_target=6, publish_enabled=True, auto_publish_xiaohongshu=True,
             publish_start_at=datetime(2026, 11, 9, 0), schedule_time="00:30", publish_jitter_seconds=0)
         db.add(config)
         db.add(FactoryRun(id="run", active_slot=None, status="completed"))

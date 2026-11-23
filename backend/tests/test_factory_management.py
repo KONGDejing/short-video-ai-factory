@@ -71,7 +71,7 @@ def test_zero_baseline_is_recorded_but_percentage_is_undefined(db):
 def test_work_orders_are_durable_idempotent_and_keep_bilibili_separate(db):
     now = datetime.now(timezone.utc)
     analytics = {"platforms": [{"platform": p, "status": "not_connected"} for p in ("douyin", "xiaohongshu", "kuaishou", "bilibili")]}
-    state = {"summary": {"target": 6, "fully_submitted_slots": 0}}
+    state = {"summary": {"target": 7, "fully_submitted_slots": 0}}
     manager.sync_work_orders(db, state, analytics, now)
     manager.sync_work_orders(db, state, analytics, now)
     daily = db.query(FactoryWorkOrder).filter_by(kind="daily").all()
@@ -81,10 +81,10 @@ def test_work_orders_are_durable_idempotent_and_keep_bilibili_separate(db):
     assert all(r.status == "blocked" and r.evidence["seconds_range"] == [360, 600] for r in long)
     assert db.get(FactoryGrowthPlan, 1).policy["bilibili"]["weekly_count"] == 2
     policy = db.get(FactoryGrowthPlan, 1).policy
-    assert policy["shorts_per_day"] == 6 and policy["max_short_submissions_per_day"] == 4
-    assert policy["automated_platforms"] == ["douyin"]
-    assert policy["platform_delivery_modes"]["kuaishou"] == "manual"
-    assert policy["editor_quotas"] == {"producer": 4, "producer2": 0, "producer3": 2}
+    assert policy["shorts_per_day"] == 7 and policy["max_short_submissions_per_day"] == 7
+    assert policy["automated_platforms"] == ["douyin", "kuaishou", "xiaohongshu"]
+    assert policy["platform_delivery_modes"]["kuaishou"] == "automated"
+    assert policy["editor_quotas"] == {"producer": 4, "producer2": 0, "producer3": 3}
     assert all(order.evidence["required"] == policy["editor_quotas"][order.owner] for order in daily if order.owner in policy["editor_quotas"])
 
 
@@ -96,9 +96,9 @@ def test_existing_growth_plan_replaces_old_distribution_without_losing_baselines
     db.commit()
     updated = manager.initialize(db)
     assert updated.baselines == baseline
-    assert updated.policy["automated_platforms"] == ["douyin"]
-    assert updated.policy["max_short_submissions_per_day"] == 4
-    assert updated.policy["single_platform_per_original"] is False
+    assert updated.policy["automated_platforms"] == ["douyin", "kuaishou", "xiaohongshu"]
+    assert updated.policy["max_short_submissions_per_day"] == 7
+    assert updated.policy["single_platform_per_original"] is True
 
 
 def test_scorecards_do_not_invent_full_scores_when_evidence_is_missing(db):
@@ -190,7 +190,7 @@ def test_today_assignments_include_carried_delivery_and_exclude_cancelled_slots(
     analytics={'platforms':[]}
     monkeypatch.setattr(operations.factory_analytics,'overview',lambda _:analytics)
     state=operations.overview(db,now=now)
-    assert state['summary']['completed']==1 and state['summary']['target']==6
+    assert state['summary']['completed']==1 and state['summary']['target']==7
     assert state['summary']['publish_target']==4 and state['summary']['scheduled_slots']==1
     manager.sync_work_orders(db,{'summary':{'target':6,'fully_submitted_slots':0}},analytics,now)
     assert db.get(FactoryWorkOrder,'daily:2026-11-11:producer3').evidence['done']==1
@@ -229,10 +229,11 @@ def test_director_is_scored_on_accepted_due_work_instead_of_service_heartbeat(db
 
 
 def test_unassigned_editor_becomes_director_incident_and_is_not_counted_as_video(db, monkeypatch):
-    from models.factory import FactoryItem, FactoryRun
+    from models.factory import FactoryConfig, FactoryItem, FactoryRun
     from services import factory_operations as operations
     from services.factory_editorial_policy import POLICY
     now=datetime(2026,11,17,4,tzinfo=timezone.utc)  # noon in Beijing
+    db.add(FactoryConfig(id=1, daily_target=6))
     run=FactoryRun(target_count=6,status='partial',active_slot=None,created_at=datetime(2026,11,16,16,30),
         settings_snapshot={'distribution_policy':POLICY,'target_duration_seconds':150})
     db.add(run);db.flush()

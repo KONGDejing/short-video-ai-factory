@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database import Base
-from models.factory import FactoryConfig, FactoryEvent, FactoryItem, FactoryPublication, FactoryRun
+from models.factory import FactoryConfig, FactoryEvent, FactoryItem, FactoryPublication, FactoryRun, FactoryWorkOrder
 from services import creator_connector, factory_publishing, factory_service, factory_resources, xiaohongshu_connector
 
 
@@ -23,7 +23,7 @@ def publishing(tmp_path, monkeypatch):
     monkeypatch.setattr(factory_resources, "memory_state", lambda **kwargs: {"blocked": False})
     engine = create_engine(f"sqlite:///{tmp_path / 'publishing.db'}")
     Base.metadata.create_all(engine, tables=[FactoryConfig.__table__, FactoryRun.__table__, FactoryItem.__table__,
-                                            FactoryPublication.__table__, FactoryEvent.__table__])
+                                            FactoryPublication.__table__, FactoryEvent.__table__, FactoryWorkOrder.__table__])
     sessions = sessionmaker(bind=engine)
     results = {}
 
@@ -40,13 +40,13 @@ def publishing(tmp_path, monkeypatch):
     monkeypatch.setattr(factory_service, "SessionLocal", sessions)
     monkeypatch.setattr(xiaohongshu_connector, "submit_command", submit)
     monkeypatch.setattr(xiaohongshu_connector, "command_result", get_result)
-    monkeypatch.setattr(xiaohongshu_connector, "connection_state", lambda: {"authenticated": True})
+    monkeypatch.setattr(xiaohongshu_connector, "connection_state", lambda: {"authenticated": True, "capabilities": {"prepare": True, "publish": True}})
 
     video, cover = tmp_path / "fixture.mp4", tmp_path / "cover.png"
     video.write_bytes(b"fixture, never uploaded")
     cover.write_bytes(b"fixture, never uploaded")
     with sessions() as db:
-        db.add(FactoryConfig(id=1, platforms=["xiaohongshu", "douyin", "kuaishou", "bilibili"]))
+        db.add(FactoryConfig(id=1, auto_publish_xiaohongshu=True, platforms=["xiaohongshu", "douyin", "kuaishou", "bilibili"]))
         run = FactoryRun(status="completed", target_count=1, completed_count=1,
                          report={"production": {"completed": 1, "published": 0, "submitted": 0}})
         db.add(run)
@@ -505,7 +505,7 @@ def test_new_operations_require_the_assigned_platform(distribution_publishing):
     env = distribution_publishing
     with env.sessions() as db:
         for action in ('prepare', 'publish'):
-            with pytest.raises(ValueError, match='手动'):
+            with pytest.raises(ValueError, match='没有分配|有效的日常分发计划|已暂停'):
                 factory_publishing.begin_publication(db, env.item_id, action, 'kuaishou')
         assert db.query(FactoryPublication).count() == 0
     env.creator_submit.assert_not_called()
@@ -524,7 +524,7 @@ def test_manual_xhs_never_inspects_or_submits_but_old_receipts_are_readable(dist
         item.brief = {**item.brief, 'distribution': {**item.brief['distribution'], 'platform': 'xiaohongshu'}}
         db.commit()
         for action in ('prepare', 'publish'):
-            with pytest.raises(AutomationDisabled):
+            with pytest.raises(ValueError, match="没有分配"):
                 factory_publishing.begin_publication(db, env.item_id, action, 'xiaohongshu')
         receipt = FactoryPublication(item_id=item.id, platform='xiaohongshu', action='publish',
                                      status='failed', result={'submission_uncertain': True}, command_id='retained-job')
@@ -534,9 +534,10 @@ def test_manual_xhs_never_inspects_or_submits_but_old_receipts_are_readable(dist
     forbidden.assert_not_called()
 
 
-@pytest.mark.parametrize('destination', ['douyin'])
+@pytest.mark.parametrize('destination', ['douyin', 'kuaishou', 'xiaohongshu'])
 def test_automatic_platform_uses_final_export_and_ai_disclosure(distribution_publishing, monkeypatch, tmp_path, destination):
     from services.factory_platform_policy import AutomationDisabled, require_automation
+    from services.factory_release_plan import THREE_PLATFORM_PLAN
     env = distribution_publishing
     monkeypatch.setattr(factory_publishing, 'require_automation', require_automation)
     with env.sessions() as db:
@@ -546,18 +547,26 @@ def test_automatic_platform_uses_final_export_and_ai_disclosure(distribution_pub
         cover.write_bytes(b'approved lettered cover')
         item.packages = [{**p, 'video_path': str(final), 'cover_path': str(cover)} if p['platform'] == destination else p for p in item.packages]
         db.commit()
-        for platform in ('xiaohongshu', 'bilibili'):
-            with pytest.raises(AutomationDisabled):
-                factory_publishing.begin_publication(db, item.id, 'prepare', platform)
-        item.brief = {**item.brief, 'distribution': {**item.brief['distribution'], 'platform': destination}}
+        with pytest.raises(AutomationDisabled):
+            factory_publishing.begin_publication(db, item.id, 'prepare', 'bilibili')
+        run = db.get(FactoryRun, env.run_id)
+        run.settings_snapshot = {**run.settings_snapshot, 'release_plan': THREE_PLATFORM_PLAN}
+        item.brief = {**item.brief, 'distribution': {**item.brief['distribution'], 'platform': destination,
+            'release_plan': THREE_PLATFORM_PLAN, 'douyin_selected': destination == 'douyin',
+            f'{destination}_selected': True}}
         db.commit()
         job = factory_publishing.begin_publication(db, item.id, 'prepare', destination)
         assert job.status == 'queued'
-        platform, action, payload = env.creator_submit.call_args.args
-        assert (platform, action) == (destination, 'prepare')
+        if destination == 'xiaohongshu':
+            action, payload = env.submit.call_args.args
+            env.submit.assert_called_once()
+        else:
+            platform, action, payload = env.creator_submit.call_args.args
+            assert platform == destination
+            env.creator_submit.assert_called_once()
+        assert action == 'prepare'
         assert payload['video_path'] == str(final) and payload['cover_path'] == str(cover)
         assert payload['ai_generated'] is True and '内容由AI生成' in payload['caption']
-    env.creator_submit.assert_called_once()
 
 
 def test_douyin_missing_final_export_does_not_silently_upload_source_montage(distribution_publishing):
@@ -566,7 +575,7 @@ def test_douyin_missing_final_export_does_not_silently_upload_source_montage(dis
         item = db.get(FactoryItem, env.item_id)
         item.packages = [{k: v for k, v in p.items() if k != 'video_path'} for p in item.packages]
         db.commit()
-        with pytest.raises(ValueError, match='最终交付成片'):
+        with pytest.raises(ValueError, match='最终成片'):
             factory_publishing.begin_publication(db, item.id, 'prepare', 'douyin')
     env.creator_submit.assert_not_called()
 
@@ -639,7 +648,7 @@ def test_legacy_multiplatform_item_cannot_create_another_operation(distribution_
         db.add(FactoryPublication(item_id=item.id, platform='xiaohongshu', action='publish', status='submitted'))
         db.commit()
         assert factory_publishing.begin_publication(db, item.id, 'publish', 'douyin').id == first.id
-        with pytest.raises(ValueError, match='手动'):
+        with pytest.raises(ValueError, match='没有分配|有效的日常分发计划|已暂停'):
             factory_publishing.begin_publication(db, item.id, 'prepare', 'kuaishou')
     env.creator_submit.assert_not_called()
 
@@ -662,6 +671,6 @@ def test_kuaishou_old_selected_original_cannot_create_new_account_operation(dist
     monkeypatch.setattr(factory_publishing,'require_automation',require_automation)
     env=distribution_publishing
     with env.sessions() as db:
-        with pytest.raises(AutomationDisabled):
+        with pytest.raises(ValueError, match='没有分配'):
             factory_publishing.begin_publication(db,env.item_id,'prepare','kuaishou')
     env.creator_submit.assert_not_called()

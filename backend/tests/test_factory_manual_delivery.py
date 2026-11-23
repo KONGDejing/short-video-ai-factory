@@ -28,7 +28,7 @@ def manual(tmp_path, monkeypatch):
     Base.metadata.create_all(engine, tables=[model.__table__ for model in
         (FactoryConfig, FactoryRun, FactoryItem, FactoryPublication, FactoryRelease, FactoryEvent, FactoryWorkOrder)])
     db = sessionmaker(bind=engine)()
-    config = FactoryConfig(id=1, publish_enabled=False, publish_jitter_seconds=0)
+    config = FactoryConfig(id=1, daily_target=6, publish_enabled=False, publish_jitter_seconds=0)
     run = FactoryRun(id="manual-run", status="completed", settings_snapshot={"distribution_policy":"douyin-four-random-v1"})
     db.add_all([config, run])
     db.flush()

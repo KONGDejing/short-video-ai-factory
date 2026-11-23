@@ -20,14 +20,15 @@ from services import xiaohongshu_connector as connector
 from services.factory_platform_policy import AutomationDisabled, automation_enabled, automation_state, require_automation
 
 
-def test_douyin_and_kuaishou_upload_are_authorized_but_account_analytics_stays_manual():
+def test_all_three_uploads_are_authorized_but_account_analytics_stays_manual():
     from services.factory_platform_policy import analytics_enabled
     assert automation_enabled(" DOUYIN ")
     assert automation_state("douyin")["mode"] == "automated"
     require_automation("douyin")
-    with pytest.raises(AutomationDisabled): require_automation("kuaishou")
-    assert not automation_enabled(" KUAISHOU ")
-    assert "AI生成" in automation_state("douyin")["reason"]
+    for platform in ("kuaishou", "xiaohongshu"):
+        require_automation(platform)
+    assert automation_enabled(" KUAISHOU ")
+    assert "AI制作" in automation_state("douyin")["reason"]
     assert not any(analytics_enabled(p) for p in ["douyin", "kuaishou", "xiaohongshu", "bilibili"])
 
 
@@ -36,25 +37,31 @@ def test_failed_beijing_transport_falls_back_without_revoking_owner_scope(tmp_pa
     path = tmp_path / 'transport.json'
     path.write_text(json.dumps({'kuaishou': {'ready': False, 'reason': 'Beijing TLS unavailable', 'password': 'fixture-never-expose'}}))
     monkeypatch.setattr(policy, 'TRANSPORT_STATE', path)
-    assert not policy.automation_enabled('kuaishou')
+    assert policy.automation_enabled('kuaishou')
     assert not policy.effective_automation_enabled('kuaishou')
     assert policy.effective_automation_enabled('douyin')
     assert 'password' not in policy.publication_transport_state('kuaishou')
 
 
-@pytest.mark.parametrize("platform", ["xiaohongshu", "kuaishou", "bilibili", "future_platform"])
+@pytest.mark.parametrize("platform", ["bilibili", "future_platform"])
 def test_policy_cannot_be_enabled_by_environment_or_cached_login(monkeypatch, platform):
     monkeypatch.setenv(platform.upper() + "_AUTOMATION_ENABLED", "true")
     assert not automation_enabled(platform)
     assert not automation_enabled(" " + platform.upper() + " ")
     assert automation_state(platform)["mode"] == "manual"
-    with pytest.raises(AutomationDisabled, match="本人.*手动"):
+    with pytest.raises(AutomationDisabled, match="本人"):
         require_automation(platform)
     assert issubclass(AutomationDisabled, ValueError)
 
 
+@pytest.fixture
+def xhs_disabled(monkeypatch):
+    from services import factory_platform_policy as policy
+    monkeypatch.setattr(policy, 'AUTOMATED_PLATFORMS', frozenset({'douyin', 'kuaishou'}))
+
+
 @pytest.mark.parametrize("action", ["login", "inspect", "prepare", "publish"])
-def test_xhs_submit_blocks_before_payload_queue_or_service_start(monkeypatch, action):
+def test_xhs_submit_blocks_before_payload_queue_or_service_start(monkeypatch, action, xhs_disabled):
     guards = {name: Mock(side_effect=AssertionError("Disabled automation reached a side effect"))
               for name in ("_payload", "_directories", "_write", "_ensure_daemon")}
     for name, mock in guards.items():
@@ -65,7 +72,7 @@ def test_xhs_submit_blocks_before_payload_queue_or_service_start(monkeypatch, ac
         mock.assert_not_called()
 
 
-def test_all_xhs_start_paths_stop_before_importing_or_launching_browser(monkeypatch):
+def test_all_xhs_start_paths_stop_before_importing_or_launching_browser(monkeypatch, xhs_disabled):
     directories = Mock(side_effect=AssertionError("Must not create runtime state"))
     launch = Mock(side_effect=AssertionError("Must not launch a browser"))
     command = Mock(side_effect=AssertionError("Must not start a process or service"))
@@ -80,7 +87,7 @@ def test_all_xhs_start_paths_stop_before_importing_or_launching_browser(monkeypa
     directories.assert_not_called(); launch.assert_not_called(); command.assert_not_called()
 
 
-def test_xhs_state_is_read_only_historical_cache_even_if_authenticated(tmp_path, monkeypatch):
+def test_xhs_state_is_read_only_historical_cache_even_if_authenticated(tmp_path, monkeypatch, xhs_disabled):
     path = tmp_path / "state.json"
     cached = {"authenticated": True, "session_active": True, "display_name": "fixture-account",
               "updated_at": "2026-01-01T00:00:00+00:00", "prepared_item_id": "historical-item"}
@@ -99,10 +106,24 @@ def test_xhs_state_is_read_only_historical_cache_even_if_authenticated(tmp_path,
 
 def test_direct_script_entry_exits_cleanly_without_pythonpath(tmp_path):
     env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
-    result = subprocess.run([sys.executable, str(Path(connector.__file__).resolve()), "--serve"],
+    result = subprocess.run([sys.executable, "-c", "import runpy,sys; runpy.run_path(sys.argv[1])",
+                             str(Path(connector.__file__).resolve())],
                             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10)
-    assert result.returncode == 0 and "自动化已停用" in result.stdout
-    assert "Traceback" not in result.stderr
+    assert result.returncode == 0, result.stderr
+
+
+
+def test_xiaohongshu_authenticated_session_hides_previous_qr(tmp_path, monkeypatch):
+    state = tmp_path / 'account.json'
+    image = tmp_path / 'login.png'
+    image.write_bytes(b'fixture screenshot')
+    state.write_text(json.dumps({'authenticated': True, 'session_active': True, 'qr_ready': True}))
+    monkeypatch.setattr(connector, 'STATE_FILE', state)
+    monkeypatch.setattr(connector, 'LOGIN_IMAGE', image)
+    monkeypatch.setattr(connector, '_alive', lambda: True)
+    account = connector.connection_state()
+    assert account['authenticated'] and account['capabilities']['prepare']
+    assert account['qr_ready'] is False
 
 
 @pytest.fixture
@@ -113,15 +134,15 @@ def sessions():
     engine.dispose()
 
 
-def test_settings_enable_only_douyin_without_enabling_other_accounts(sessions):
+def test_settings_enable_seven_originals_and_three_platforms(sessions):
     from routers.factory import SettingsUpdate, update_settings
     with sessions() as db:
-        result = update_settings(SettingsUpdate(publish_enabled=True, manual_delivery_enabled=True), db)
-        assert result['publish_enabled'] and result['manual_delivery_enabled']
-        assert result['platform_automation']['douyin']['enabled']
-        assert not result['platform_automation']['kuaishou']['enabled']
-        assert not result['auto_publish_xiaohongshu']
-        assert all(not result['platform_automation'][p]['enabled'] for p in ['xiaohongshu'])
+        result = update_settings(SettingsUpdate(daily_target=7, publish_enabled=True,
+                                                 auto_publish_xiaohongshu=True), db)
+        assert result['publish_enabled'] and result['auto_publish_xiaohongshu']
+        assert result['platform_daily_limits'] == {'douyin': 4, 'kuaishou': 2, 'xiaohongshu': 1}
+        assert all(p['enabled'] for p in result['platform_automation'].values())
+
 
 
 @pytest.mark.parametrize("platform", ["douyin", "xiaohongshu", "kuaishou", "bilibili"])

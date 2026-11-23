@@ -41,15 +41,14 @@ def batch(db, key='daily'):
 
 def test_saved_policy_retains_watch_scope_and_replaces_daily_paper_plan():
     p=editorial_policy()
-    assert p['production']['daily_total']==6 and p['production']['douyin_daily_total']==4
-    assert p['production']['editor_daily_quotas']=={'producer':4,'producer2':0,'producer3':2}
+    assert p['production']['daily_total']==7 and p['production']['douyin_daily_total']==4
+    assert p['production']['editor_daily_quotas']=={'producer':4,'producer2':0,'producer3':3}
     assert p['production']['weekly_papers']['total']==2
     assert len(p['people'])==50 and Counter(x['region'] for x in p['people'])=={'海外':40,'国内':10}
     assert {'Geoffrey Hinton','Mark Zuckerberg','Lisa Su'} <= {x['name'] for x in p['people']}
     assert '新智元' in editor_profile('producer')['visual']
     assert '论文PPT' in editor_profile('producer2')['visual']
-    assert automation_enabled('douyin') and not automation_enabled('kuaishou')
-    assert not automation_enabled('xiaohongshu')
+    assert all(automation_enabled(p) for p in ('douyin', 'kuaishou', 'xiaohongshu'))
 
 
 def test_uniform_sample_is_saved_and_polling_does_not_redraw(db,monkeypatch):
@@ -134,7 +133,7 @@ def test_same_editor_can_fill_multiple_slots_but_four_reservations_stop_fifth(db
     fifth=items[4];fifth.brief={**fifth.brief,'distribution':{**routes[fifth.id],'douyin_selected':True,'platform':'douyin'}}
     with pytest.raises(ValueError,match='4条'):
         guard_publication(db,fifth,'douyin','prepare',now=NOW)
-    with pytest.raises(ValueError,match='手动'):
+    with pytest.raises(ValueError,match='没有分配'):
         guard_publication(db,items[0],'kuaishou','prepare',now=NOW)
 
 
@@ -223,7 +222,7 @@ def test_ppt_stays_only_with_paper_editor():
 def test_old_rules_cannot_create_new_uploads(db):
     run,items=batch(db);assign_distribution(db,run.id,DAY)
     run.settings_snapshot={'distribution_policy':'douyin-three-tracks-v2'}
-    with pytest.raises(ValueError,match='旧发行规则'):
+    with pytest.raises(ValueError,match='有效的日常分发计划'):
         guard_publication(db,items[0],'douyin','prepare',now=NOW)
 
 
@@ -256,5 +255,5 @@ def test_completed_new_policy_day_cannot_accidentally_start_another_six(db, monk
     r.settings_snapshot={**r.settings_snapshot,'production_day':local_day()};r.target_count=6
     db.add(FactoryConfig(id=1));db.commit()
     monkeypatch.setattr(factory_service,'queue_available',lambda:True)
-    with pytest.raises(ValueError,match='当天6条'):
+    with pytest.raises(ValueError,match='当天7条'):
         factory_service.start_run(db,target_count=6)
