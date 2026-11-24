@@ -2,7 +2,7 @@ const NAMES = { douyin: '抖音', xiaohongshu: '小红书', kuaishou: '快手', 
 const LABELS = { connected: '已取得官方数据', stale: '上次数据 · 待刷新', unavailable: '采集未完成', not_connected: '未接入' }
 const WORK_STATUS = { ...LABELS, awaiting_authorization: '待接入授权凭证', waiting: '等待首次采集' }
 const EMPLOYEES = { director: '老周', researcher: '小探', researcher3: '小探3', writer: '小文', producer: '小影', producer2: '小影2', producer3: '小影3', reviewer: '小审', publisher: '小麦', analyst: '小数' }
-const TASK_STATUS = { pending: '待执行', in_progress: '执行中', completed: '已验收', blocked: '受阻 · 待处理' }
+const TASK_STATUS = { pending: '待执行', in_progress: '执行中', completed: '已验收', blocked: '受阻 · 待处理', expired: '已过时效' }
 const WEEK_STATUS = { not_due: '未到周末', missing_data: '缺少完整快照', met: '达到目标', above_stretch: '超过10%', below_target: '未达到5%' }
 const fmt = value => value == null ? '未接入' : Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 const time = value => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '暂无记录'
@@ -36,6 +36,11 @@ export default function FactoryOperations({ analytics, operations, library }) {
     {operations && <section className="rounded-2xl border border-emerald-300/15 bg-[#0e1621] p-5">
       <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="text-lg font-semibold text-slate-100">老周 · 今日管理台</h3><span className="text-xs text-slate-400">巡检：{time(operations.monitoring?.last_patrol_at)} · 日报 {operations.report_time} 北京时间</span></div>
       <p className="mt-2 text-xs leading-6 text-slate-500">岗位任务由每日排期与当前问题分配。进度来自实际执行事件；{operations.assignments.length}位同事由同一工作流协调；三位剪辑师各自负责整条视频，重配音与渲染共用受内存保护的队列。</p>
+      {operations.breaking_news && <div className="mt-4 rounded-xl border border-sky-300/15 p-4">
+        <h4 className="text-sm font-semibold text-slate-200">每小时科技热点</h4>
+        <p className="mt-2 text-xs leading-5 text-slate-400">上次检查 {time(operations.breaking_news.last_check?.checked_at)} · 下次 {time(operations.breaking_news.next_check)}{operations.breaking_news.last_check?.result === 'sources_unavailable' ? ' · 本轮未取得可用来源' : operations.breaking_news.last_check && ` · 核对 ${operations.breaking_news.last_check.source_count} 份原文 · 新发现 ${operations.breaking_news.last_check.new_events} 条`}</p>
+        {operations.breaking_news.events.length > 0 && <ul className="mt-3 space-y-2">{operations.breaking_news.events.map(event => <li key={event.source_url} className="text-xs leading-5 text-slate-300"><a className="text-sky-200" href={event.source_url} target="_blank" rel="noreferrer">{event.title}</a> · {TASK_STATUS[event.status]}{event.message && <span className="block text-slate-500">{event.message}</span>}</li>)}</ul>}
+      </div>}
       {operations.management?.accountability?.demerit_count > 0 && <div className="mt-4 rounded-xl border border-rose-300/20 bg-rose-300/[0.03] p-4">
         <h4 className="text-sm font-semibold text-rose-200">老周 · 累计记过 {operations.management.accountability.demerit_count} 次</h4>
         <p className="mt-2 text-xs leading-6 text-slate-400">按用户明确决定登记；整改须凭实际交付另行验收，巡检在线不代表工作完成。</p>

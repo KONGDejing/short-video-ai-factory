@@ -133,7 +133,7 @@ def _article(record, now):
         return None, f'{record["url"]}：新闻原文采集失败（{type(exc).__name__}）'
 
 
-def collect_company_news(limit=18):
+def collect_company_news(limit=18, search_hints=()):
     from services.factory_research import _utcnow, is_major_event
     from services.factory_editorial_policy import matching_people
     if type(limit) is not int or not 1 <= limit <= MAX_ARTICLE_CHECKS:
@@ -148,7 +148,18 @@ def collect_company_news(limit=18):
     # remain high priority without allowing one company to occupy the whole pool.
     # An undated headline can prioritize retrieval, never establish an event.
     # _article still requires the original body and a recent publication date.
-    candidates.sort(key=lambda row: (is_major_event(row) or bool(EVENT_LEAD.search(row.get('title', ''))),
+    def words(title):
+        return set(re.findall(r'\b[a-z\d]{4,}\b', title.lower())) - {
+            'with', 'from', 'over', 'into', 'after', 'says', 'will', 'that', 'this', 'about'}
+
+    hints = [words(title) for title in search_hints[:40]]
+
+    def matches_press(title):
+        headline = words(title)
+        return any(len(headline & hint) >= max(3, min(len(headline), len(hint)) * .55) for hint in hints)
+
+    candidates.sort(key=lambda row: (matches_press(row.get('title', '')),
+                                     is_major_event(row) or bool(EVENT_LEAD.search(row.get('title', ''))),
                                      row.get('published_at') or ''), reverse=True)
     seen = set(); first = []; rest = []
     for row in candidates:

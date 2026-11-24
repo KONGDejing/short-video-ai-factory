@@ -66,6 +66,7 @@ ALLOWED_HOSTS = frozenset({
     "blogs.microsoft.com", "microsoft.ai", "www.apple.com", "ir.aboutamazon.com",
     "www.amd.com", "ir.spacex.com", "www.spacex.com", "content.spacex.com", "ipo.anthropic.com", "x.com", "investor.sandisk.com", "investors.micron.com", "ir.tesla.com", "x.ai",
     "arxiv.org", "rss.arxiv.org", "export.arxiv.org", "www.ces.tech", "ces.tech", "www.mofcom.gov.cn",
+    "feeds.bbci.co.uk", "www.bbc.co.uk", "www.bbc.com", "feeds.arstechnica.com", "arstechnica.com",
     "sumo048.github.io", "roboforpc.github.io", "ai4ce.github.io", "weirdlabuw.github.io", "zju3dv.github.io",
 })
 MAX_BYTES = 2_000_000

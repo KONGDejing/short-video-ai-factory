@@ -122,6 +122,7 @@ def publication_usage(db, platform, day, *, include_prepares=False,
 def guard_publication(db, item, platform, action, *, timezone_name='Asia/Shanghai', now=None):
     from services.factory_team import editor_id
     from services.factory_makeup import authorized_makeup, authorized_owner_crosspost
+    from services.factory_breaking_news import registered_order
     if platform not in PLATFORM_LIMITS:
         raise ValueError('此平台没有日常短视频自动发布配额')
     db.execute(update(FactoryRun).where(FactoryRun.id == item.run_id).values(heartbeat_at=FactoryRun.heartbeat_at))
@@ -137,7 +138,16 @@ def guard_publication(db, item, platform, action, *, timezone_name='Asia/Shangha
             or item.brief.get('editor_track') == 'paper_explainer'
             or item.content.get('editor_id') == 'producer2'):
         raise ValueError('论文视频走每周人工交付')
-    if _day(route.get('day')) != today:
+    timestamp = now or datetime.now(timezone.utc)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    breaking = registered_order(db, run)
+    if breaking and (platform != 'douyin'
+            or timestamp.astimezone(timezone.utc).replace(tzinfo=None) >= breaking.due_at
+            or run.settings_snapshot.get('breaking_news_source_id') not in (item.content or {}).get('source_ids', [])):
+        raise ValueError('突发热点已超过时效或作品缺少指定的事件原文')
+    extra = bool(breaking and (breaking.evidence.get('extra') or route.get('day') != today))
+    if _day(route.get('day')) != today and not extra:
         raise ValueError('发行日期与今天不符，请显式重新排期后再操作')
     permitted = platform == 'douyin' or (run.settings_snapshot.get('release_plan') == THREE_PLATFORM_PLAN
                                         and route.get('release_plan') == THREE_PLATFORM_PLAN)
@@ -155,19 +165,27 @@ def guard_publication(db, item, platform, action, *, timezone_name='Asia/Shangha
         raise ValueError('本作品或原始版本已有平台任务，须核对，禁止重复提交')
     occupied = reserved_item_ids(db, platform, today, include_prepares=True,
         timezone_name=timezone_name, exclude_item_id=item.id)
-    if platform == 'douyin' and not crosspost and occupied:
+    if platform == 'douyin' and occupied:
         peers = db.query(FactoryItem).filter(FactoryItem.id.in_(occupied))
         occupied.difference_update(peer.id for peer in peers
-            if authorized_owner_crosspost(db, peer, platform, today, include_completed=True))
+            if _extra_breaking_item(db, peer, today) or
+            (not crosspost and authorized_owner_crosspost(db, peer, platform, today, include_completed=True)))
     makeup = authorized_makeup(db, run, today) if platform == 'douyin' else None
     limit = (makeup[1] if makeup else PLATFORM_LIMITS[platform]) + int(crosspost)
-    if len(occupied) >= limit:
+    if not extra and len(occupied) >= limit:
         raise ValueError(f'该平台当天已预留或提交{limit}条作品，未知结果也占额度')
-    timestamp = now or datetime.now(timezone.utc)
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
     return {'policy': CURRENT_DISTRIBUTION_POLICY, 'day': today, 'editor_id': owner,
             'timezone': timezone_name, 'reserved_at': timestamp.isoformat(), 'action': action}
+
+
+def _extra_breaking_item(db, item, day):
+    from services.factory_breaking_news import registered_order
+    route = (item.brief or {}).get('distribution') or {}
+    if route.get('production_kind') != 'breaking_news' and route.get('day') == day:
+        return False
+    run = db.get(FactoryRun, item.run_id)
+    order = registered_order(db, run) if run else None
+    return bool(order and (order.evidence.get('extra') or route.get('day') != day))
 
 
 def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
@@ -194,6 +212,23 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
     if (not isinstance(proposal, dict) or set(proposal) - set(requested)
             or any(value not in ('douyin', 'manual') for value in proposal.values())):
         raise ValueError('仅可提议入选抖音或保留人工素材')
+    if run.settings_snapshot.get('production_kind') == 'breaking_news':
+        from services.factory_breaking_news import registered_order
+        order = registered_order(db, run)
+        if not order or order.status not in {'in_progress', 'completed'} or len(selected) != 1 or len(requested) != 1 or proposal:
+            raise ValueError('热点加发必须绑定已核验事件和单条抖音档期')
+        item = selected[0]
+        if run.settings_snapshot['breaking_news_source_id'] not in item.brief.get('source_ids', []):
+            raise ValueError('热点成片必须引用触发本轮的事件原文')
+        route = {'policy': CURRENT_DISTRIBUTION_POLICY, 'day': requested[item.id], 'production_kind': 'breaking_news',
+                 'editor_id': editor_id(item), 'platform': 'douyin', 'douyin_selected': True,
+                 'kuaishou_selected': False, 'reason': '已核验的突发科技热点，成片通过质检后提交抖音。'}
+        previous = item.brief.get('distribution')
+        if previous and previous != route:
+            raise ValueError('已有热点分发日期不能自动覆盖')
+        item.brief = {**item.brief, 'distribution': route}
+        db.flush()
+        return {item.id: route}
     weekly = run.settings_snapshot.get('production_kind') == 'weekly_papers'
     multi = run.settings_snapshot.get('release_plan') == THREE_PLATFORM_PLAN and not weekly
     slot_keys = run.settings_snapshot.get('release_slot_ids', [])
@@ -232,7 +267,8 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
                 and i.brief.get('distribution', {}).get('production_kind') != 'weekly_papers'] + group
             crossposts = {i.id for i in daily if authorized_owner_crosspost(
                 db, i, 'douyin', planned, include_completed=True)}
-            originals = [i for i in daily if i.id not in crossposts
+            extras = {i.id for i in daily if _extra_breaking_item(db, i, planned)}
+            originals = [i for i in daily if i.id not in crossposts | extras
                          and not i.brief.get('distribution', {}).get('carried_from')
                          and not (carried_from and i.run_id == run.id)]
             if (len(originals) > (DAILY_OUTPUT if multi else 6)
@@ -244,7 +280,7 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
                 timezone_name=run.settings_snapshot.get('timezone', 'Asia/Shanghai'))
             outside = reserved - group_ids
             outside.update(i.id for i in daily if i.id not in group_ids and i.brief.get('distribution', {}).get('douyin_selected'))
-            outside.difference_update(crossposts)
+            outside.difference_update(crossposts | extras)
             pinned = {i.id for i in group if output.get(i.id, {}).get('douyin_selected')
                 or i.id in reserved or proposal.get(i.id) == 'douyin'}
             capacity = max(0, limit - len(outside))

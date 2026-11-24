@@ -41,6 +41,11 @@ def catch_up_until(db, slot):
 
 def deadline(db, slot):
     run = db.get(FactoryRun, slot.run_id) if slot.run_id else None
+    if run and run.settings_snapshot.get('breaking_news_key'):
+        from services.factory_breaking_news import registered_order
+        order = registered_order(db, run)
+        if order:
+            return order.due_at
     end = slot.due_at + LATE_WINDOW
     if run and run.trigger == CLOCK_TRIGGER:
         zone = ZoneInfo(run.settings_snapshot.get("timezone", "Asia/Shanghai"))
@@ -87,6 +92,7 @@ def release_dict(db, slot):
             "jitter_seconds": slot.jitter_seconds,
             "item_id": slot.item_id, "run_id": slot.run_id, "status": slot.status,
             "production_trigger": bool(run and run.trigger == CLOCK_TRIGGER),
+            "breaking_news": bool(run and run.settings_snapshot.get('breaking_news_key')),
             "title": ((item.content or {}).get("title") or (item.brief or {}).get("title")) if item else None,
             "platforms": slot.platforms, "results": slot.results or {},
             "catch_up_until": until.replace(tzinfo=timezone.utc).isoformat() if until else None}
@@ -266,6 +272,9 @@ def plan_production(db, config, now):
         nominal_time() < start + timedelta(days=1), FactoryRelease.status != 'cancelled').order_by(nominal_time()).all()
     slots = []
     for slot in today_slots:
+        previous_run = db.get(FactoryRun, slot.run_id) if slot.run_id else None
+        if previous_run and previous_run.settings_snapshot.get('production_kind') == 'breaking_news':
+            continue
         if slot.platforms in (['kuaishou'], ['xiaohongshu']) and config.daily_target != DAILY_OUTPUT:
             continue
         item = db.get(FactoryItem, slot.item_id) if slot.item_id else None
@@ -519,7 +528,9 @@ def tick(db, config, now=None):
     now = now or datetime.now(ZoneInfo(config.timezone))
     if config.manual_delivery_enabled or config.publish_enabled or (config.production_on_release_clock and config.schedule_enabled):
         plan_slots(db, config, now)
-        production = plan_production(db, config, now)
+        from services.factory_breaking_news import dispatch
+        urgent = dispatch(db, config, now)
+        production = urgent if urgent and urgent.get('run_id') else plan_production(db, config, now)
         from services.factory_weekly_papers import plan_weekly_papers
         plan_weekly_papers(db, config, now)
     else:

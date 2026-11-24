@@ -213,7 +213,8 @@ def queue_available():
         return False
 
 
-def start_run(db, target_count=None, trigger="manual", schedule_key=None, release_slot_ids=None, editor_quota_override=None, production_kind="daily", enqueue=True):
+def start_run(db, target_count=None, trigger="manual", schedule_key=None, release_slot_ids=None,
+              editor_quota_override=None, production_kind="daily", enqueue=True, *, breaking_order=None, now=None):
     from services.factory_release_plan import DAILY_OUTPUT
     config = config_dict(get_config(db))
     target = target_count or config["daily_target"]
@@ -223,7 +224,6 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
         raise ValueError("每轮产量应为 1–7 条")
     if production_kind not in {'daily', 'weekly_papers'}:
         raise ValueError('未知排产类型')
-    config['production_kind'] = production_kind
     config["editor_quotas"] = editor_quotas(target, production_kind)
     limits = {'producer': 0, 'producer2': 2, 'producer3': 0} if production_kind == 'weekly_papers' else {'producer':4,'producer2':0,'producer3':3}
     if editor_quota_override is not None:
@@ -239,6 +239,22 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
     config["max_total_tokens"] = settings.FACTORY_MAX_TOTAL_TOKENS
     if release_slot_ids is not None:
         config["release_slot_ids"] = list(release_slot_ids)
+    if breaking_order:
+        from services.factory_breaking_news import KIND, PLATFORM, utc
+        from services.factory_schedule import FINAL
+        if (target != 1 or trigger != 'release_clock' or breaking_order.kind != KIND
+                or breaking_order.status != 'pending' or breaking_order.due_at <= utc(now)
+                or not get_config(db).publish_enabled or PLATFORM not in config['platforms']):
+            raise ValueError('没有有效的突发热点制作授权')
+        slot = db.get(FactoryRelease, release_slot_ids[0]) if release_slot_ids else None
+        if release_slot_ids and (not slot or slot.platforms != [PLATFORM] or slot.run_id
+                                 or slot.item_id or slot.status in FINAL):
+            raise ValueError('热点候选档期已占用')
+        if not slot:
+            production_kind = KIND
+        config['breaking_news_key'] = breaking_order.key
+        config['breaking_news_source_id'] = breaking_order.evidence['source']['id']
+    config['production_kind'] = production_kind
     if not queue_available():
         raise RuntimeError("Redis 任务队列暂不可写，等待服务恢复")
     if db.query(FactoryRun).filter_by(status="paused_memory").first():
@@ -246,7 +262,7 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
     if db.query(FactoryRun).filter(FactoryRun.active_slot.isnot(None)).first():
         raise ValueError("已有生产任务在运行，请等待完成或先取消")
     from services.factory_distribution import local_day
-    production_day = local_day(timezone_name=config['timezone'])
+    production_day = local_day(now, timezone_name=config['timezone'])
     used_target = 0
     weekly_target = 0
     from datetime import date as calendar_date
@@ -254,7 +270,7 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
     week_start = current_date - timedelta(days=current_date.weekday())
     for previous in db.query(FactoryRun).all():
         snapshot = previous.settings_snapshot or {}
-        if snapshot.get('distribution_policy') != POLICY or snapshot.get('production_kind') == 'owner_crosspost':
+        if snapshot.get('distribution_policy') != POLICY or snapshot.get('production_kind') in {'owner_crosspost', 'breaking_news'}:
             continue
         previous_day = snapshot.get('production_day') or local_day(previous.created_at, config['timezone'])
         if snapshot.get('production_kind') == 'weekly_papers':
@@ -287,12 +303,34 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
     try:
         ensure_memory_available()
     except MemoryPressure as exc:
+        if breaking_order:
+            raise ValueError(str(exc)) from exc
         pressure = exc
-    run = FactoryRun(target_count=target, trigger=trigger, schedule_key=schedule_key, settings_snapshot=config)
+    initial_sources = [breaking_order.evidence['source'], *breaking_order.evidence.get('related', [])] if breaking_order else []
+    run = FactoryRun(target_count=target, trigger=trigger, schedule_key=schedule_key,
+                     settings_snapshot=config, sources=initial_sources)
     if pressure:
         run.status, run.stage, run.error = "paused_memory", "paused_memory", str(pressure)
     db.add(run)
     try:
+        if breaking_order:
+            db.flush()
+            due = utc(now)
+            while db.query(FactoryRelease.id).filter(
+                    (FactoryRelease.due_at == due) | (FactoryRelease.nominal_at == due)).first():
+                due -= timedelta(microseconds=1)
+            if slot is None:
+                slot = FactoryRelease(due_at=due, nominal_at=due, jitter_seconds=0, platforms=[PLATFORM])
+                db.add(slot)
+            else:
+                slot.due_at = due
+            slot.run_id, slot.position, slot.status = run.id, 0, 'waiting_media'
+            slot.results = {PLATFORM: {'status':'waiting_media', 'message':'科技热点已开工，成片通过质检后立即提交。'}}
+            db.flush()
+            run.settings_snapshot = {**config, 'release_slot_ids': [slot.id]}
+            breaking_order.status = 'in_progress'
+            breaking_order.evidence = {**breaking_order.evidence, 'run_id': run.id, 'release_id': slot.id,
+                                       'expedited_at': now.isoformat(), 'extra': production_kind == KIND}
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -310,6 +348,11 @@ def start_run(db, target_count=None, trigger="manual", schedule_key=None, releas
         run.task_id = task.id
         db.commit()
     except Exception:
+        if breaking_order:
+            run.heartbeat_at = datetime.utcnow() - timedelta(minutes=11)
+            run.error = "热点已保存，等待调度器恢复任务队列"
+            db.commit()
+            return run
         run.status, run.active_slot, run.finished_at = "failed", None, datetime.utcnow()
         run.error = "任务入队失败，请检查 worker 与 Redis 后重试"
         db.commit()
@@ -412,6 +455,7 @@ def _make_plan(run_id):
         slot_ids = run.settings_snapshot.get('release_slot_ids') or []
         slot = db.get(FactoryRelease, slot_ids[0]) if len(slot_ids) == 1 else None
         platform = slot.platforms[0] if slot and len(slot.platforms) == 1 else 'douyin'
+        breaking_source = run.settings_snapshot.get('breaking_news_source_id')
         seeded_ids = set(run.settings_snapshot.get('owner_seeded_item_ids') or [])
         seeded = db.query(FactoryItem).filter(FactoryItem.run_id == run_id, FactoryItem.id.in_(seeded_ids)).all() if seeded_ids else []
         if seeded_ids and (len(seeded) != len(seeded_ids) or any(i.status != 'completed' for i in seeded)):
@@ -484,7 +528,7 @@ def _make_plan(run_id):
                 elif quotas and not quotas.get(owner, 0):
                     source["visual_preflight"]["reason"] = "editor_has_no_quota"
                 else:
-                    buckets[owner].append((source['id'] not in priority_ids, source['id'] not in recent_ids,
+                    buckets[owner].append((source['id'] != breaking_source, source['id'] not in priority_ids, source['id'] not in recent_ids,
                                            not hint, source['url'].rstrip('/') not in catalog_urls, source))
             for owner in owners:
                 buckets[owner].sort(key=lambda row: row[:-1])
@@ -629,12 +673,17 @@ def _make_plan(run_id):
                 "asset_ids_for_editing_only": [a["id"] for a in s.get("visual_assets", []) if a.get("id")]}
                 for s in usable],
             "visual_constraint": "先写完整口播再匹配画面。论文选题必须有对应论文原文，制作会提取真实PDF页面及图表，不能用其他研究的背景演示代替。其他选题需有本题可核验画面线索。素材不足不凑数。"}
+        if breaking_source:
+            assignment['breaking_news_source_id'] = breaking_source
+            assignment['breaking_news_instruction'] = '本轮只做指定突发事件，source_ids必须包含其原文ID。给出有清楚证据和可用画面的独立叙事角度。相关资料只补背景，素材不足就报告缺口。'
         if run.trigger == 'release_clock':
             assignment["coverage_instruction"] += " 本次是按时段制作一条，优先从北京时间开工当天及近期的原始消息选题，按这次的岗位配额给候选，结合已有作品去重。"
         for attempt in range(2):
             research = call_agent(run_id, "researcher", assignment, max_tokens=max(3500, (target + 2) * 550))
             raw_candidates = research.get("candidates") if isinstance(research, dict) else None
             candidates, diagnostics = _eligible_candidates(raw_candidates, usable, visual_style, with_diagnostics=True)
+            if breaking_source:
+                candidates = [c for c in candidates if breaking_source in c['source_ids']]
             counts = {owner: sum(candidate_editor(c, usable) == owner for c in candidates) for owner in (quotas or {})}
             enough = len(candidates) >= target and all(counts[owner] >= count for owner, count in (quotas or {}).items())
             candidate_coverage = coverage_for(candidates)
@@ -689,6 +738,8 @@ def _make_plan(run_id):
         news_candidates = {index: refs for index, brief in enumerate(plan['candidates'])
                            if (refs := recent_news_sources(brief, sources, day, zone))}
     candidates = plan['candidates']
+    if breaking_source and any(breaking_source not in c.get('source_ids', []) for c in candidates):
+        raise ValueError('突发热点候选缺少指定的事件原文')
     available = [index for index, brief in enumerate(candidates)
                  if quotas and quotas.get(candidate_editor(brief, sources), 0) > 0]
     priority_candidates = {index: sorted(set(refs) & priority_ids) for index, refs in news_candidates.items()
@@ -850,6 +901,9 @@ def _write_and_review(run_id, item_id):
             if not isinstance(content.get("title"), str) or not content["title"].strip():
                 raise ValueError("文案缺少标题")
             _sources_for(content.get("source_ids", []), sources)
+            breaking_id = run.settings_snapshot.get('breaking_news_source_id')
+            if breaking_id and breaking_id not in content['source_ids']:
+                raise ValueError('口播必须引用触发本轮热点的事件原文')
             if engagement_required:
                 validate_follow_prompt(content)
             if director_hook_required:
@@ -1264,7 +1318,12 @@ def _package(run_id, item_id):
         if new_distribution:
             if route.get('policy') != POLICY:
                 raise ValueError('本条尚未确定发布平台或每周人工交付计划')
-            platforms = ['xiaohongshu', 'kuaishou'] if run.settings_snapshot.get('production_kind') == 'weekly_papers' else ['xiaohongshu', 'kuaishou', 'douyin']
+            if run.settings_snapshot.get('breaking_news_key'):
+                platforms = ['douyin']
+            elif run.settings_snapshot.get('production_kind') == 'weekly_papers':
+                platforms = ['xiaohongshu', 'kuaishou']
+            else:
+                platforms = ['xiaohongshu', 'kuaishou', 'douyin']
             existing = [p for p in existing if p['platform'] in platforms]
         elif route:
             if route.get('platform') not in platforms:

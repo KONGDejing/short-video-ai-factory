@@ -136,7 +136,9 @@ def overview(db, now=None):
     reports = db.query(FactoryDailyReport).order_by(FactoryDailyReport.day.desc()).limit(7).all()
     result["reports"] = [{"day": r.day, "created_at": stamp(r.created_at), **r.data} for r in reports]
     from services.factory_management import overview as management_overview
+    from services.factory_breaking_news import overview as breaking_overview
     result["management"] = management_overview(db, metrics)
+    result['breaking_news'] = breaking_overview(db)
     return result
 
 
