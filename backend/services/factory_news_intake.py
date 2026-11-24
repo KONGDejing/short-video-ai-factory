@@ -26,7 +26,7 @@ COMPANY_SOURCES = (
 )
 MAX_LEADS_PER_COMPANY = 6
 MAX_ARTICLE_CHECKS = 42
-EVENT_LEAD = re.compile(r'\bIPO\b|initial public offering|roadshow|resign|acquisition|lawsuit|上市|路演|辞职|收购|诉讼', re.I)
+EVENT_LEAD = re.compile(r'\bIPO\b|initial public offering|roadshow|resign|reinstat|acquisition|lawsuit|上市|路演|辞职|复职|收购|诉讼', re.I)
 
 
 class ArticleLinks(HTMLParser):

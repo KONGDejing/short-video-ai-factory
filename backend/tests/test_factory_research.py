@@ -2,6 +2,7 @@
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
+import httpx
 
 from services import factory_research as research
 
@@ -10,6 +11,7 @@ class ResearchTests(unittest.TestCase):
     def test_dated_official_transition_is_a_priority_lead_not_a_confirmed_allegation(self):
         lead = {'kind': 'news', 'title': 'NVIDIA Announces CEO Transition', 'published_at': '2026-11-12T00:00:00Z'}
         self.assertTrue(research.is_major_event(lead))
+        self.assertTrue(research.is_major_event({**lead, 'title': 'NVIDIA Board Reinstates Jensen Huang as CEO'}))
         self.assertFalse(research.is_major_event({**lead, 'published_at': None}))
         self.assertFalse(research.is_major_event({**lead, 'kind': 'paper'}))
         self.assertFalse(research.is_major_event({**lead, 'title': 'Introducing a new reasoning model'}))
@@ -38,6 +40,13 @@ class ResearchTests(unittest.TestCase):
                     "http://127.0.0.1/", "file:///etc/passwd"]:
             with self.subTest(url=url), self.assertRaises(ValueError):
                 research._validated_url(url)
+
+    def test_first_party_requests_retry_connection_errors_with_the_configured_route(self):
+        url = 'https://openai.com/news/rss.xml'
+        with patch.object(research, '_fetch_on_route',
+                          side_effect=[httpx.ConnectError('connection unavailable'), ('official', url)]) as fetch:
+            self.assertEqual(research._fetch_url(url), ('official', url))
+        self.assertEqual([call.kwargs['trust_env'] for call in fetch.call_args_list], [False, True])
 
     def test_article_excludes_navigation_and_scripts(self):
         document = ("<html><head><title>Official title</title></head>"

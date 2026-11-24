@@ -80,8 +80,8 @@ HF_OFFICIAL_ORGS = frozenset({"allenai", "nvidia", "google", "microsoft", "ibm",
 def is_major_event(record):
     """Prioritize an official news lead; keywords do not establish its claims."""
     return record.get('kind') == 'news' and bool(record.get('published_at')) and bool(re.search(
-        r'CEO transition|resign(?:s|ed|ation)?|independent.*board|investigation|recall|sanctions?|'
-        r'export restrictions?|acquisition|lawsuit|辞职|卸任|调查|召回|制裁|收购|诉讼',
+        r'CEO transition|resign(?:s|ed|ation)?|reinstat(?:es?|ed|ement)|independent.*board|investigation|recall|sanctions?|'
+        r'export restrictions?|acquisition|lawsuit|辞职|卸任|复职|调查|召回|制裁|收购|诉讼',
         record.get('title', ''), re.I))
 
 
@@ -103,8 +103,15 @@ def _validated_url(url: str) -> str:
 
 
 def _fetch_url(url: str) -> tuple[str, str]:
+    try:
+        return _fetch_on_route(url, trust_env=False)
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError):
+        return _fetch_on_route(url, trust_env=True)
+
+
+def _fetch_on_route(url: str, *, trust_env: bool) -> tuple[str, str]:
     current = _validated_url(url)
-    with httpx.Client(timeout=HTTP_TIMEOUT, follow_redirects=False,
+    with httpx.Client(timeout=HTTP_TIMEOUT, follow_redirects=False, trust_env=trust_env,
                       headers={"User-Agent": USER_AGENT,
                                "Accept": "text/markdown, text/html;q=0.9, */*;q=0.8"}) as client:
         for _ in range(5):

@@ -219,6 +219,16 @@ def _public_host(url):
 
 
 def _transfer(client, url, *, media, max_bytes, deadline, budget, target=None):
+    try:
+        return _transfer_on_route(client, url, media=media, max_bytes=max_bytes,
+                                  deadline=deadline, budget=budget, target=target)
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError):
+        with httpx.Client(follow_redirects=False, headers=client.headers, trust_env=True) as fallback:
+            return _transfer_on_route(fallback, url, media=media, max_bytes=max_bytes,
+                                      deadline=deadline, budget=budget, target=target)
+
+
+def _transfer_on_route(client, url, *, media, max_bytes, deadline, budget, target=None):
     current = _url(url, media=media)
     history = [current]
     for _ in range(5):
@@ -615,7 +625,8 @@ def collect_visuals(sources: list[dict], output_dir: str | Path, limit: int = 16
             fingerprints.add(digest); cache_bytes += size
         except (OSError, ValueError, KeyError):
             continue
-    with httpx.Client(follow_redirects=False, headers={"User-Agent": "ShortVideoAIContentFactory/0.3 (official-video-reference)"}) as client:
+    with httpx.Client(follow_redirects=False, trust_env=False,
+                      headers={"User-Agent": "ShortVideoAIContentFactory/0.3 (official-video-reference)"}) as client:
         while queue and len(assets) < limit and len(visited) < MAX_PAGES and time.monotonic() < deadline:
             address, source, chain, depth = queue.pop(0)
             if address in visited:
