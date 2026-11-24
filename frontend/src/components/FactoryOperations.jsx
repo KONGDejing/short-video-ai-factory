@@ -1,5 +1,6 @@
 const NAMES = { douyin: '抖音', xiaohongshu: '小红书', kuaishou: '快手', bilibili: '哔哩哔哩' }
 const LABELS = { connected: '已取得官方数据', stale: '上次数据 · 待刷新', unavailable: '采集未完成', not_connected: '未接入' }
+const WORK_STATUS = { ...LABELS, awaiting_authorization: '待接入授权凭证', waiting: '等待首次采集' }
 const EMPLOYEES = { director: '老周', researcher: '小探', researcher3: '小探3', writer: '小文', producer: '小影', producer2: '小影2', producer3: '小影3', reviewer: '小审', publisher: '小麦', analyst: '小数' }
 const TASK_STATUS = { pending: '待执行', in_progress: '执行中', completed: '已验收', blocked: '受阻 · 待处理' }
 const WEEK_STATUS = { not_due: '未到周末', missing_data: '缺少完整快照', met: '达到目标', above_stretch: '超过10%', below_target: '未达到5%' }
@@ -19,6 +20,18 @@ export default function FactoryOperations({ analytics, operations, library }) {
           <tr className="border-t border-white/[0.05]"><th className="p-3 font-normal text-slate-400">最近采集</th>{analytics.platforms.map(p => <td key={p.platform} className="p-3 text-slate-500">{time(p.collected_at)}{p.sources?.[0] && <a href={p.sources[0]} target="_blank" rel="noreferrer" className="mt-1 block text-sky-300">查看官方后台 ↗</a>}</td>)}</tr>
         </tbody></table></div>
       <p className="mt-4 text-xs leading-6 text-slate-500">关注转化率仅显示平台明确提供的指标；不会用“净增粉丝÷播放量”替代。账号数据包含历史作品，不能直接归因于今天的新视频。B站单独安排每周2条6–10分钟专题。</p>
+      {analytics.work_metrics && <div className="mt-5 border-t border-white/[0.08] pt-5">
+        <h4 className="text-sm font-semibold text-slate-200">作品表现与选题调整</h4>
+        <p className="mt-2 text-xs leading-6 text-slate-400">授权后每{analytics.work_metrics.refresh_minutes}分钟采集。选题参考近14天同平台作品最接近发布后24小时的播放量。</p>
+        <div className="mt-3 grid gap-3 lg:grid-cols-3">{analytics.work_metrics.platforms.map(p => <div key={p.platform} className="rounded-lg bg-white/[0.03] p-3 text-xs">
+          <h5 className="font-semibold text-slate-200">{NAMES[p.platform]} <span className={p.status === 'connected' ? 'text-emerald-300' : 'text-amber-300'}>· {WORK_STATUS[p.status]}</span></h5>
+          {p.collected_at && <p className="mt-2 text-slate-400">最近采集 {time(p.collected_at)}</p>}
+          {p.status === 'connected' && !p.works.length && <p className="mt-2 text-slate-500">本次暂无匹配到工厂发布记录的作品。</p>}
+          {p.preferred_topics.length > 0 ? p.preferred_topics.map(t => <p key={t.topic} className="mt-2 leading-5 text-sky-200">优先 {t.topic} · {t.sample_count} 条 · 播放中位数 {fmt(t.median_views)}，对照 {fmt(t.comparison_median_views)}</p>) : <p className="mt-2 text-slate-500">暂无足够的同龄作品样本</p>}
+          {p.works.length > 0 && <ul className="mt-3 space-y-2">{p.works.map(w => <li key={w.item_id} className="flex justify-between gap-2 text-slate-300"><span>{w.title}</span><span className="shrink-0 tabular-nums">{fmt(w.views)} 播放</span></li>)}</ul>}
+        </div>)}</div>
+        {analytics.work_metrics.owner_observations.map(o => <p key={`${o.platform}-${o.observed_at}`} className="mt-3 text-xs leading-6 text-slate-400">{time(o.observed_at)} · {NAMES[o.platform]} · 用户观察 · {o.summary}</p>)}
+      </div>}
     </section>}
     {operations && <section className="rounded-2xl border border-emerald-300/15 bg-[#0e1621] p-5">
       <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="text-lg font-semibold text-slate-100">老周 · 今日管理台</h3><span className="text-xs text-slate-400">巡检：{time(operations.monitoring?.last_patrol_at)} · 日报 {operations.report_time} 北京时间</span></div>

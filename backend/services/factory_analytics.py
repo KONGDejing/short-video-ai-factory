@@ -182,4 +182,6 @@ def overview(db):
         platforms.append({**data, "platform": platform, "status": "stale" if stale else latest.status if latest else "not_connected",
                           "message": latest.data.get("message", "") if latest else "等待首次官方数据采集",
                           "collected_at": good.collected_at.replace(tzinfo=timezone.utc).isoformat() if good else None})
-    return {"platforms": platforms, "metric_labels": METRICS, "refresh_minutes": 30}
+    from services.factory_work_metrics import overview as work_metrics_overview
+    return {"platforms": platforms, "metric_labels": METRICS, "refresh_minutes": 30,
+            'work_metrics': work_metrics_overview(db)}

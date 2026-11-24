@@ -127,6 +127,15 @@ class FactoryAnalyticsSnapshot(Base):
     data = Column(JSON, nullable=False, default=dict)
 
 
+class FactoryWorkMetricsSnapshot(Base):
+    __tablename__ = 'factory_work_metrics_snapshots'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    platform = Column(String(30), nullable=False, index=True)
+    collected_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    status = Column(String(30), nullable=False)
+    data = Column(JSON, nullable=False, default=dict)
+
+
 class FactoryDailyReport(Base):
     __tablename__ = "factory_daily_reports"
     day = Column(String(10), primary_key=True)

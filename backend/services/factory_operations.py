@@ -11,7 +11,7 @@ from sqlalchemy import or_
 from database import SessionLocal, init_db
 from models.factory import FactoryAnalyticsSnapshot, FactoryConfig, FactoryDailyReport, FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun, FactoryWorkOrder
 from agents.registry import AGENTS, DAILY_TARGET
-from services import factory_analytics
+from services import factory_analytics, factory_work_metrics
 from services.factory_resources import memory_state
 from services.factory_platform_policy import analytics_enabled
 from services.factory_release_plan import scheduled_times
@@ -27,7 +27,7 @@ ASSIGNMENTS = {
     "producer3": "独立完成分配的视频，重点打磨热点故事与剪辑节奏，核对事件画面和口播",
     "reviewer": "核查事实与观点边界、画面证据、完整口播和实际成片时长",
     "publisher": "按排期提交抖音4条、快手2条、小红书1条，核对AI声明和平台回执",
-    "analyst": "依据用户提供的官方统计与留存历史数据复盘，保留日期、周期和缺项，不自动访问账号后台",
+    "analyst": "轮询已授权的作品数据，按各平台同龄作品播放比较题材，每轮向老周提供选题依据",
 }
 
 
@@ -155,6 +155,7 @@ def patrol(db, now=None):
             "basis": "系统按实际任务、官方回执和平台数据生成的事实日报",
             "summary": state["summary"], "assignments": state["assignments"], "alerts": state["alerts"],
             "improvements": state["improvements"], "analytics": factory_analytics.overview(db),
+            'work_metrics': factory_work_metrics.overview(db),
             "management": state.get("management"),
             "tomorrow": ["小探补充有出处的热点与可用素材，避免同一事实换标题重复生产", "小文与小影按150秒标准制作，小审核验实际成片", "小麦处理未确认回执，小数对照同周期平台数据再提出优化"]}))
         db.commit()
@@ -170,6 +171,8 @@ def serve():
             try:
                 with SessionLocal() as db:
                     patrol(db)
+                    if not memory_state()['blocked']:
+                        factory_work_metrics.collect_due(db)
                     for platform in ("douyin", "xiaohongshu", "kuaishou", "bilibili"):
                         if not analytics_enabled(platform):
                             continue

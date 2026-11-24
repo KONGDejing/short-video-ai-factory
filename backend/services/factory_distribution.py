@@ -6,6 +6,7 @@ Callers commit the assignment in the same transaction as their release records.
 """
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+import re
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import update
@@ -18,6 +19,11 @@ DISTRIBUTION_PLATFORMS = ("douyin", "xiaohongshu", "kuaishou")
 DAILY_PLATFORM_LIMIT = 4
 RESERVATION_KEY = "quota_reservation"
 NEWS_PRIORITY_DAYS = 3
+TECH_LAUNCH = re.compile(
+    r'(?=.*\b(?:new|introduc\w*|launch\w*|releas\w*|unveil\w*|debut\w*)\b)'
+    r'(?=.*\b(?:model|agent|chip|processor|gpu|robot|rocket|spacecraft)\b)|'
+    r'(?:发布|推出|首飞|首秀|量产|实测).*(?:模型|智能体|芯片|机器人|火箭)|'
+    r'(?:模型|智能体|芯片|机器人|火箭).*(?:发布|推出|首飞|首秀|量产)', re.I)
 
 
 def _day(value):
@@ -37,12 +43,12 @@ def local_day(now=None, timezone_name="Asia/Shanghai"):
     return now.astimezone(ZoneInfo(timezone_name)).date().isoformat()
 
 
-def recent_news_sources(brief, sources, day, timezone_name='Asia/Shanghai'):
+def recent_news_sources(brief, sources, day, timezone_name='Asia/Shanghai', *, max_days=NEWS_PRIORITY_DAYS):
     """Only dated reporting sources cited for facts can give a story priority."""
     if brief.get('freshness') != 'news':
         return []
     day = date.fromisoformat(day)
-    cutoff = day - timedelta(days=NEWS_PRIORITY_DAYS - 1)
+    cutoff = day - timedelta(days=max_days - 1)
     cited = set(brief.get('source_ids') or [])
     verified = []
     for source in sources:
@@ -60,6 +66,14 @@ def recent_news_sources(brief, sources, day, timezone_name='Asia/Shanghai'):
         if cutoff <= source_day <= day:
             verified.append(source['id'])
     return verified
+
+
+def priority_news_sources(brief, sources, day, timezone_name='Asia/Shanghai'):
+    """Give verified, recent events production priority, independently of measured audience demand."""
+    from services.factory_research import is_major_event
+    cited = set(recent_news_sources(brief, sources, day, timezone_name, max_days=2))
+    return [s['id'] for s in sources if s['id'] in cited and s.get('url') and s.get('text')
+            and (is_major_event(s) or TECH_LAUNCH.search(s.get('title') or ''))]
 
 
 def _no_submit_proven(job):
@@ -241,17 +255,22 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
             draw_count = min(len(candidates), capacity-len(pinned))
             recent = [key for key in candidates if news_first and recent_news_sources(
                 by_id[key].brief, run.sources or [], planned, run.settings_snapshot.get('timezone', 'Asia/Shanghai'))]
+            urgent = [key for key in recent if priority_news_sources(
+                by_id[key].brief, run.sources or [], planned, run.settings_snapshot.get('timezone', 'Asia/Shanghai'))]
             random = SystemRandom()
-            news_count = min(len(recent), draw_count)
-            news_draw = random.sample(recent, news_count) if news_count else []
+            priority_draw = random.sample(urgent, min(len(urgent), draw_count)) if urgent and draw_count else []
+            ordinary_news = [key for key in recent if key not in urgent]
+            news_count = min(len(ordinary_news), draw_count - len(priority_draw))
+            news_draw = random.sample(ordinary_news, news_count) if news_count else []
             remaining = [key for key in candidates if key not in recent]
-            remaining_count = draw_count - news_count
-            drawn = news_draw + (random.sample(remaining, remaining_count) if remaining_count else [])
+            remaining_count = draw_count - len(priority_draw) - news_count
+            drawn = priority_draw + news_draw + (random.sample(remaining, remaining_count) if remaining_count else [])
             nominations = pinned | set(drawn)
             if drawn or planned not in selections:
-                selections[planned] = {'method': 'recent_news_then_random' if news_first else 'system_random_sample_without_replacement',
+                selections[planned] = {'method': ('priority_news_then_recent_then_random' if urgent else
+                    'recent_news_then_random' if news_first else 'system_random_sample_without_replacement'),
                     'candidate_ids': candidates, 'drawn_ids': drawn,
-                    'recent_news_candidate_ids': recent,
+                    'recent_news_candidate_ids': recent, 'priority_news_candidate_ids': urgent,
                     'selected_ids': sorted(nominations), 'owner_pinned_ids': sorted({k for k,v in proposal.items() if v == 'douyin'} | {i.id for i in group if output.get(i.id,{}).get('owner_pinned')}),
                     'recorded_at': datetime.now(timezone.utc).isoformat()}
         secondary = {}
@@ -288,7 +307,7 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
                     '已分配唯一自动发布平台，保留成片和发布回执。' if multi and platform else
                     '成片与发布文案已保存，等待可用排期。' if multi else
                     '用户明确指定今天上传抖音；保留官方核验、AI声明、署名与禁止下载。' if proposal.get(item.id) == 'douyin' else
-                    '日常6条中优先选取近期有原文的新闻，同优先级随机补齐4条；排期保存。' if chosen and news_first else
+                    '抖音优先近两日有原文的重大事件和技术发布，其次近期新闻，同优先级随机。' if chosen and news_first else
                     '日常非论文6条中持久随机抽4条上传抖音，刷新不重抽；保留完整下载包。' if chosen else
                     '未入选抖音，完整成片与文案保留，由本人手动上传快手或小红书。')}
     for key, route in output.items():
