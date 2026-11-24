@@ -29,7 +29,8 @@ def db():
     engine.dispose()
 
 
-def test_seven_clock_slots_keep_unique_platforms_and_reserve_each_cap(db):
+@pytest.mark.parametrize('with_crosspost', [False, True])
+def test_seven_clock_slots_keep_unique_platforms_and_reserve_each_cap(db, with_crosspost):
     start = datetime(2026, 11, 24, tzinfo=ZoneInfo('Asia/Shanghai'))
     config = FactoryConfig(daily_target=7, publish_jitter_seconds=0, auto_publish_xiaohongshu=True,
                            publish_times=['05:00', '05:30', '06:00', '06:30'])
@@ -40,14 +41,20 @@ def test_seven_clock_slots_keep_unique_platforms_and_reserve_each_cap(db):
     slots = db.query(FactoryRelease).filter(FactoryRelease.nominal_at < day_start + timedelta(days=1)) \
         .order_by(FactoryRelease.nominal_at).all()
     assert Counter(slot.platforms[0] for slot in slots) == PLATFORM_LIMITS
-    for slot, editor in zip(slots, DAILY_EDITOR_ORDER):
+    scheduled = list(zip(slots, DAILY_EDITOR_ORDER))
+    if with_crosspost:
+        first_kuaishou = next(pair for pair in scheduled if pair[0].platforms == ['kuaishou'])
+        scheduled.remove(first_kuaishou)
+        scheduled.insert(0, first_kuaishou)
+    for position, (slot, editor) in enumerate(scheduled):
         platform = slot.platforms[0]
         run = FactoryRun(active_slot=None, target_count=1, status='completed',
                          settings_snapshot={**config_dict(config), 'release_slot_ids': [slot.id]})
         db.add(run)
         db.flush()
         run.active_slot = None
-        item = FactoryItem(run_id=run.id, position=0, brief={'title': slot.id, 'editor_id': editor})
+        item = FactoryItem(run_id=run.id, position=0, brief={'title': slot.id, 'editor_id': editor},
+                           media={'fingerprint': slot.id})
         db.add(item)
         db.flush()
         route = assign_distribution(db, run.id, day=start.date())[item.id]
@@ -59,8 +66,28 @@ def test_seven_clock_slots_keep_unique_platforms_and_reserve_each_cap(db):
         for other in PLATFORM_LIMITS.keys() - {platform}:
             with pytest.raises(ValueError, match='没有分配'):
                 guard_publication(db, item, other, 'prepare', now=start)
-        db.add(FactoryPublication(item_id=item.id, platform=platform, action='publish', status='submitted',
-                                  created_at=slot.due_at))
+        receipt = FactoryPublication(item_id=item.id, platform=platform, action='publish', status='submitted',
+                                     created_at=slot.due_at)
+        db.add(receipt)
+        if with_crosspost and position == 0:
+            receipt.result = {'evidence': {'type': 'api_acceptance',
+                'url': 'https://cp.kuaishou.com/rest/cp/works/v2/video/pc/submit', 'success': True, 'code': 1}}
+            db.flush()
+            crosspost_run = FactoryRun(active_slot=None, settings_snapshot=config_dict(config))
+            db.add(crosspost_run)
+            db.flush()
+            crosspost_run.active_slot = None
+            target = FactoryItem(run_id=crosspost_run.id, position=0, media=item.media,
+                brief={**item.brief, 'origin_item_id': item.id, 'distribution': {
+                    **route, 'platform': 'douyin', 'douyin_selected': True, 'kuaishou_selected': False}})
+            db.add(target)
+            db.flush()
+            db.add(FactoryWorkOrder(key=f'owner-crosspost:douyin:{item.id}', kind='owner_crosspost',
+                owner='publisher', title='转发试验', acceptance='官方回执', due_at=slot.due_at,
+                status='completed', evidence={'day': start.date().isoformat(),
+                    'destination_item_id': target.id, 'source_receipt_id': receipt.id}))
+            db.add(FactoryPublication(item_id=target.id, platform='douyin', action='publish',
+                                      status='submitted', created_at=slot.due_at))
         db.flush()
     assert len({slot.item_id for slot in slots}) == 7
 

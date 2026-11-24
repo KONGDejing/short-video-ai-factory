@@ -141,6 +141,10 @@ def guard_publication(db, item, platform, action, *, timezone_name='Asia/Shangha
         raise ValueError('本作品或原始版本已有平台任务，须核对，禁止重复提交')
     occupied = reserved_item_ids(db, platform, today, include_prepares=True,
         timezone_name=timezone_name, exclude_item_id=item.id)
+    if platform == 'douyin' and not crosspost and occupied:
+        peers = db.query(FactoryItem).filter(FactoryItem.id.in_(occupied))
+        occupied.difference_update(peer.id for peer in peers
+            if authorized_owner_crosspost(db, peer, platform, today, include_completed=True))
     makeup = authorized_makeup(db, run, today) if platform == 'douyin' else None
     limit = (makeup[1] if makeup else PLATFORM_LIMITS[platform]) + int(crosspost)
     if len(occupied) >= limit:
@@ -161,7 +165,7 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
     from secrets import SystemRandom
     from services.factory_team import editor_id
     from services.factory_editorial_policy import MANUAL_PLATFORMS
-    from services.factory_makeup import authorized_makeup
+    from services.factory_makeup import authorized_makeup, authorized_owner_crosspost
     db.execute(update(FactoryRun).where(FactoryRun.id == run_id).values(heartbeat_at=FactoryRun.heartbeat_at))
     run = db.get(FactoryRun, run_id)
     if not run or run.settings_snapshot.get('distribution_policy') != CURRENT_DISTRIBUTION_POLICY:
@@ -212,7 +216,10 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
                 and i.brief.get('distribution', {}).get('policy') == CURRENT_DISTRIBUTION_POLICY
                 and i.brief.get('distribution', {}).get('day') == planned
                 and i.brief.get('distribution', {}).get('production_kind') != 'weekly_papers'] + group
-            originals = [i for i in daily if not i.brief.get('distribution', {}).get('carried_from')
+            crossposts = {i.id for i in daily if authorized_owner_crosspost(
+                db, i, 'douyin', planned, include_completed=True)}
+            originals = [i for i in daily if i.id not in crossposts
+                         and not i.brief.get('distribution', {}).get('carried_from')
                          and not (carried_from and i.run_id == run.id)]
             if (len(originals) > (DAILY_OUTPUT if multi else 6)
                     or sum(editor_id(i) == 'producer' for i in originals) > 4
@@ -223,6 +230,7 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
                 timezone_name=run.settings_snapshot.get('timezone', 'Asia/Shanghai'))
             outside = reserved - group_ids
             outside.update(i.id for i in daily if i.id not in group_ids and i.brief.get('distribution', {}).get('douyin_selected'))
+            outside.difference_update(crossposts)
             pinned = {i.id for i in group if output.get(i.id, {}).get('douyin_selected')
                 or i.id in reserved or proposal.get(i.id) == 'douyin'}
             capacity = max(0, limit - len(outside))

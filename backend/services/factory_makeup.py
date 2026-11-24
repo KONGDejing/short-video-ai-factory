@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from models.factory import FactoryItem, FactoryPublication, FactoryRelease, FactoryWorkOrder
 
 
-def authorized_owner_crosspost(db, item, platform, release_day):
+def authorized_owner_crosspost(db, item, platform, release_day, *, include_completed=False):
     """Permit one named destination item after the original was accepted by Kuaishou."""
     from services.factory_publishing import _valid_evidence
 
@@ -13,7 +13,8 @@ def authorized_owner_crosspost(db, item, platform, release_day):
     if platform != 'douyin' or not origin_id or origin_id == item.id:
         return False
     order = db.get(FactoryWorkOrder, f'owner-crosspost:douyin:{origin_id}')
-    if not order or order.kind != 'owner_crosspost' or order.status != 'authorized':
+    statuses = {'authorized', 'completed'} if include_completed else {'authorized'}
+    if not order or order.kind != 'owner_crosspost' or order.status not in statuses:
         return False
     evidence = order.evidence or {}
     if evidence.get('day') != release_day or evidence.get('destination_item_id') != item.id:
