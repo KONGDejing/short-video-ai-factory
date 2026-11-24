@@ -16,7 +16,7 @@ from services import factory_platform_policy, factory_schedule
 from services.factory_distribution import assign_distribution, guard_publication
 from services.factory_release_plan import PLATFORM_LIMITS
 from services.factory_release_trial import require_live_trial, trial_key
-from services.factory_service import config_dict, get_config
+from services.factory_service import config_dict
 from services.factory_team import DAILY_EDITOR_ORDER
 
 
@@ -29,9 +29,9 @@ def db():
     engine.dispose()
 
 
-def test_six_clock_slots_keep_unique_platforms_and_reserve_each_cap(db):
+def test_seven_clock_slots_keep_unique_platforms_and_reserve_each_cap(db):
     start = datetime(2026, 11, 24, tzinfo=ZoneInfo('Asia/Shanghai'))
-    config = FactoryConfig(daily_target=6, publish_jitter_seconds=0, auto_publish_xiaohongshu=True,
+    config = FactoryConfig(daily_target=7, publish_jitter_seconds=0, auto_publish_xiaohongshu=True,
                            publish_times=['05:00', '05:30', '06:00', '06:30'])
     db.add(config)
     db.commit()
@@ -62,11 +62,11 @@ def test_six_clock_slots_keep_unique_platforms_and_reserve_each_cap(db):
         db.add(FactoryPublication(item_id=item.id, platform=platform, action='publish', status='submitted',
                                   created_at=slot.due_at))
         db.flush()
-    assert len({slot.item_id for slot in slots}) == 6
+    assert len({slot.item_id for slot in slots}) == 7
 
 
 def test_legacy_archive_cannot_be_sent_to_restored_platform(db):
-    config = FactoryConfig(daily_target=5)
+    config = FactoryConfig(daily_target=6)
     db.add(config)
     db.flush()
     run = FactoryRun(settings_snapshot=config_dict(config))
@@ -81,21 +81,42 @@ def test_legacy_archive_cannot_be_sent_to_restored_platform(db):
         guard_publication(db, item, 'kuaishou', 'prepare', now=today)
 
 
-def test_existing_day_plan_keeps_only_the_first_kuaishou_slot(db):
-    now = datetime(2026, 11, 24, tzinfo=ZoneInfo('Asia/Shanghai'))
-    config = FactoryConfig(id=1, daily_target=7, publish_jitter_seconds=0,
-                           publish_times=['05:00', '05:30', '06:00', '06:30'])
-    obsolete = FactoryRelease(due_at=factory_schedule.utc(now.replace(hour=9)),
-                              nominal_at=factory_schedule.utc(now.replace(hour=9)), platforms=['kuaishou'])
-    db.add_all([config, obsolete])
-    db.commit()
-    assert get_config(db).daily_target == 6
-    factory_schedule.plan_slots(db, config, now)
-    factory_schedule.plan_slots(db, config, now)
-    assert obsolete.status == 'cancelled'
-    rows = db.query(FactoryRelease).filter(FactoryRelease.nominal_at < factory_schedule.utc(now + timedelta(days=1)),
-                                           FactoryRelease.status != 'cancelled').all()
-    assert Counter(row.platforms[0] for row in rows) == PLATFORM_LIMITS
+def test_owner_crosspost_admits_only_the_named_version_after_kuaishou_acceptance(db):
+    from services.factory_distribution import CURRENT_DISTRIBUTION_POLICY
+
+    day = '2026-11-24'
+    now = datetime(2026, 11, 24, 7, tzinfo=timezone.utc)
+    run = FactoryRun(id='crosspost', settings_snapshot={'distribution_policy': CURRENT_DISTRIBUTION_POLICY})
+    db.add(run)
+    db.flush()
+    original = FactoryItem(id='original', run_id=run.id, position=0, media={'fingerprint': 'approved'})
+    route = {'policy': CURRENT_DISTRIBUTION_POLICY, 'day': day, 'platform': 'douyin',
+             'douyin_selected': True, 'editor_id': 'producer'}
+    target = FactoryItem(id='target', run_id=run.id, position=1, media={'fingerprint': 'approved'},
+                         brief={'origin_item_id': original.id, 'distribution': route})
+    db.add_all([original, target])
+    db.flush()
+    receipt = FactoryPublication(item_id=original.id, platform='kuaishou', action='publish', status='submitted',
+        result={'evidence': {'type': 'api_acceptance', 'url': 'https://cp.kuaishou.com/rest/cp/works/v2/video/pc/submit',
+                            'success': True, 'code': 1}})
+    db.add(receipt)
+    db.flush()
+    for index in range(4):
+        db.add(FactoryPublication(item_id=f'other-{index}', platform='douyin', action='publish',
+                                  status='submitted', created_at=now.replace(tzinfo=None)))
+    db.flush()
+    with pytest.raises(ValueError, match='禁止重复提交'):
+        guard_publication(db, target, 'douyin', 'prepare', now=now)
+    db.add(FactoryWorkOrder(key=f'owner-crosspost:douyin:{original.id}', kind='owner_crosspost',
+                            owner='publisher', title='转发试验', acceptance='官方回执', due_at=now,
+                            status='authorized', evidence={'day': day, 'destination_item_id': target.id,
+                                                           'source_receipt_id': receipt.id}))
+    db.flush()
+    assert guard_publication(db, target, 'douyin', 'prepare', now=now)['day'] == day
+    target.media = {'fingerprint': 'different'}
+    db.flush()
+    with pytest.raises(ValueError, match='禁止重复提交'):
+        guard_publication(db, target, 'douyin', 'prepare', now=now)
 
 
 def test_failed_kuaishou_network_keeps_slot_for_its_own_platform(db, monkeypatch):

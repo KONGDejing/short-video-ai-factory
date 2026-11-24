@@ -32,7 +32,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(schedule.publishing, "_connection_state", lambda platform: {
         "authenticated": True, "prepared_item_id": "item", "capabilities": {"prepare": True, "publish": True}})
     with sessions() as db:
-        config = FactoryConfig(id=1, daily_target=5, publish_enabled=True, auto_publish_xiaohongshu=True,
+        config = FactoryConfig(id=1, daily_target=6, publish_enabled=True, auto_publish_xiaohongshu=True,
             publish_start_at=datetime(2026, 11, 9, 0), schedule_time="00:30", publish_jitter_seconds=0)
         db.add(config)
         db.add(FactoryRun(id="run", active_slot=None, status="completed"))

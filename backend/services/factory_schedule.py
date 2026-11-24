@@ -151,7 +151,7 @@ def plan_slots(db, config, now):
             local_clock = (slot.nominal_at or slot.due_at).replace(tzinfo=timezone.utc).astimezone(now.tzinfo).strftime('%H:%M')
             if local_clock not in ADDITIONAL_TIMES['kuaishou']:
                 slot.status = 'cancelled'
-                slot.results = {'kuaishou': _result('cancelled', '快手每天保留一个开工时段')}
+                slot.results = {'kuaishou': _result('cancelled', '按当前快手日配额取消额外时段')}
         for slot in existing:
             _set_jitter(db, slot, config, now_utc)
             db.flush()

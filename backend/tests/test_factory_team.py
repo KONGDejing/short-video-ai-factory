@@ -28,18 +28,18 @@ def briefs():
             for index, category in enumerate(["科技成果", "智能硬件", "人物新闻", "端侧AI", "科技成果", "公司争议"])]
 
 
-def test_persisted_defaults_plan_six_originals(db):
+def test_persisted_defaults_plan_seven_originals(db):
     config, run = FactoryConfig(), FactoryRun()
     db.add_all([config, run]); db.commit()
-    assert config.daily_target == run.target_count == 6
+    assert config.daily_target == run.target_count == 7
     assert config.publish_times == list(DEFAULT_PUBLISH_TIMES) == ["17:00", "19:00", "20:00", "22:00"]
     assert config.publish_jitter_seconds == 900
     assert config.platforms == ["douyin", "xiaohongshu", "kuaishou"]
     assert len(config.publish_times) * len(config.platforms) == 12
-    assert {owner:AGENT_MAP[owner]['daily_quota'] for owner in DAILY_EDITOR_QUOTAS} == {'producer':4,'producer2':0,'producer3':2}
+    assert {owner:AGENT_MAP[owner]['daily_quota'] for owner in DAILY_EDITOR_QUOTAS} == {'producer':4,'producer2':0,'producer3':3}
 
 
-@pytest.mark.parametrize("target", range(1, 7))
+@pytest.mark.parametrize("target", range(1, 8))
 def test_partial_run_quotas_are_balanced_and_never_exceed_daily_caps(target):
     quotas = editor_quotas(target)
     assert sum(quotas.values()) == target

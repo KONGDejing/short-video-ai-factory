@@ -2,7 +2,31 @@
 from datetime import date, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from models.factory import FactoryRelease, FactoryWorkOrder
+from models.factory import FactoryItem, FactoryPublication, FactoryRelease, FactoryWorkOrder
+
+
+def authorized_owner_crosspost(db, item, platform, release_day):
+    """Permit one named destination item after the original was accepted by Kuaishou."""
+    from services.factory_publishing import _valid_evidence
+
+    origin_id = (item.brief or {}).get('origin_item_id')
+    if platform != 'douyin' or not origin_id or origin_id == item.id:
+        return False
+    order = db.get(FactoryWorkOrder, f'owner-crosspost:douyin:{origin_id}')
+    if not order or order.kind != 'owner_crosspost' or order.status != 'authorized':
+        return False
+    evidence = order.evidence or {}
+    if evidence.get('day') != release_day or evidence.get('destination_item_id') != item.id:
+        return False
+    receipt_id = evidence.get('source_receipt_id')
+    receipt = db.get(FactoryPublication, receipt_id) if receipt_id else None
+    if (not receipt or receipt.item_id != origin_id or receipt.platform != 'kuaishou'
+            or receipt.action != 'publish' or receipt.status != 'submitted'
+            or not _valid_evidence('kuaishou', (receipt.result or {}).get('evidence') or {})):
+        return False
+    origin = db.get(FactoryItem, origin_id)
+    fingerprint = (item.media or {}).get('fingerprint')
+    return bool(origin and fingerprint and (origin.media or {}).get('fingerprint') == fingerprint)
 
 
 def authorized_makeup(db, run, release_day):

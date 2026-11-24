@@ -107,7 +107,7 @@ def publication_usage(db, platform, day, *, include_prepares=False,
 
 def guard_publication(db, item, platform, action, *, timezone_name='Asia/Shanghai', now=None):
     from services.factory_team import editor_id
-    from services.factory_makeup import authorized_makeup
+    from services.factory_makeup import authorized_makeup, authorized_owner_crosspost
     if platform not in PLATFORM_LIMITS:
         raise ValueError('此平台没有日常短视频自动发布配额')
     db.execute(update(FactoryRun).where(FactoryRun.id == item.run_id).values(heartbeat_at=FactoryRun.heartbeat_at))
@@ -134,13 +134,15 @@ def guard_publication(db, item, platform, action, *, timezone_name='Asia/Shangha
     origin = item.brief.get('origin_item_id')
     if origin:
         identifiers.add(origin)
+    crosspost = authorized_owner_crosspost(db, item, platform, today)
     prior = db.query(FactoryPublication).filter(FactoryPublication.item_id.in_(identifiers)).all()
-    if any(job.platform != platform or (job.item_id != item.id and reserves_quota(job, True)) for job in prior):
+    if any((job.platform != platform or (job.item_id != item.id and reserves_quota(job, True)))
+           and not (crosspost and job.item_id == origin and job.platform == 'kuaishou') for job in prior):
         raise ValueError('本作品或原始版本已有平台任务，须核对，禁止重复提交')
     occupied = reserved_item_ids(db, platform, today, include_prepares=True,
         timezone_name=timezone_name, exclude_item_id=item.id)
     makeup = authorized_makeup(db, run, today) if platform == 'douyin' else None
-    limit = makeup[1] if makeup else PLATFORM_LIMITS[platform]
+    limit = (makeup[1] if makeup else PLATFORM_LIMITS[platform]) + int(crosspost)
     if len(occupied) >= limit:
         raise ValueError(f'该平台当天已预留或提交{limit}条作品，未知结果也占额度')
     timestamp = now or datetime.now(timezone.utc)

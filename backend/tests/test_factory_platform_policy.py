@@ -142,13 +142,13 @@ def sessions():
     engine.dispose()
 
 
-def test_settings_enable_six_originals_and_three_platforms(sessions):
+def test_settings_enable_seven_originals_and_three_platforms(sessions):
     from routers.factory import SettingsUpdate, update_settings
     with sessions() as db:
-        result = update_settings(SettingsUpdate(daily_target=6, publish_enabled=True,
+        result = update_settings(SettingsUpdate(daily_target=7, publish_enabled=True,
                                                  auto_publish_xiaohongshu=True), db)
         assert result['publish_enabled'] and result['auto_publish_xiaohongshu']
-        assert result['platform_daily_limits'] == {'douyin': 4, 'kuaishou': 1, 'xiaohongshu': 1}
+        assert result['platform_daily_limits'] == {'douyin': 4, 'kuaishou': 2, 'xiaohongshu': 1}
         assert all(p['enabled'] for p in result['platform_automation'].values())
 
 
