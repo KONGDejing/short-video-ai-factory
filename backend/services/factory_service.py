@@ -33,7 +33,7 @@ def iso(value):
 
 def config_dict(config):
     from services.factory_platform_policy import automation_state
-    from services.factory_release_plan import ADDITIONAL_TIMES, DAILY_OUTPUT, PLATFORM_LIMITS, THREE_PLATFORM_PLAN
+    from services.factory_release_plan import ADDITIONAL_TIMES, DAILY_OUTPUT, PLATFORM_LIMITS, THREE_PLATFORM_PLAN, full_video_plan
     keys = ("daily_target", "target_duration_seconds", "sector", "schedule_enabled", "schedule_time", "timezone", "platforms", "max_revisions", "max_llm_calls", "auto_publish_xiaohongshu", "visual_style", "publish_enabled", "publish_times", "manual_delivery_enabled", "production_on_release_clock")
     return {**{key: getattr(config, key) for key in (*keys, "publish_jitter_seconds")},
             "editor_quotas": editor_quotas(min(config.daily_target, DAILY_OUTPUT)),
@@ -43,11 +43,11 @@ def config_dict(config):
             'caption_safety_required': True,
             'news_first': True,
             'cyberpunk_style': True,
-            "release_plan": THREE_PLATFORM_PLAN if config.daily_target == DAILY_OUTPUT else None,
-            "platform_daily_limits": dict(PLATFORM_LIMITS),
-            "kuaishou_daily_limit": PLATFORM_LIMITS["kuaishou"],
-            "kuaishou_publish_times": list(ADDITIONAL_TIMES["kuaishou"]),
-            "xiaohongshu_publish_times": list(ADDITIONAL_TIMES["xiaohongshu"]),
+            "release_plan": THREE_PLATFORM_PLAN if full_video_plan(config) else None,
+            "platform_daily_limits": {p: limit for p, limit in PLATFORM_LIMITS.items() if p in config.platforms},
+            "kuaishou_daily_limit": PLATFORM_LIMITS["kuaishou"] if "kuaishou" in config.platforms else 0,
+            "kuaishou_publish_times": list(ADDITIONAL_TIMES["kuaishou"]) if "kuaishou" in config.platforms else [],
+            "xiaohongshu_publish_times": list(ADDITIONAL_TIMES["xiaohongshu"]) if "xiaohongshu" in config.platforms else [],
             "platform_automation": {p: automation_state(p) for p in config.platforms}}
 
 
@@ -499,8 +499,10 @@ def _make_plan(run_id):
     priority_ids = set(priority_news_sources({'freshness': 'news', 'source_ids': list(recent_ids)},
                                             sources, day, zone)) - covered_sources
     preferred_topics = []
+    from services.factory_work_metrics import platform_direction, platform_direction_brief, topic
+    direction = platform_direction_brief(platform) if news_first else []
     if news_first:
-        from services.factory_work_metrics import recommend_topics, topic
+        from services.factory_work_metrics import recommend_topics
         with SessionLocal() as db:
             preferred_topics = recommend_topics(db, platform)
     if not plan.get("candidates"):
@@ -657,6 +659,7 @@ def _make_plan(run_id):
             "recent_news_source_ids": sorted(recent_ids),
             'priority_news_source_ids': sorted(priority_ids),
             'platform_topic_feedback': preferred_topics,
+            'platform_editorial_direction': direction,
             'editorial_priority': '先提近两日有新事实的科技热点。人物决策、市场变化、重大发布与真实演示均可。相近时效和素材条件下优先目标平台近期实测表现较好的方向。已讲过的事件只追有新证据的进展。',
             "recent_titles": recent, "strategy": STRATEGY,
             "topic_coverage": source_coverage,
@@ -748,7 +751,8 @@ def _make_plan(run_id):
 
     def editorial_rank(index):
         return (index not in priority_candidates, index not in news_candidates,
-                not boosted_topics or topic(candidates[index]) not in boosted_topics)
+                not boosted_topics or topic(candidates[index]) not in boosted_topics,
+                platform_direction(candidates[index], platform) if direction else 0)
 
     if plan.get('material_shortfall') and available and len(available) == target:
         # Every eligible candidate is required to fill this reduced plan.
@@ -768,6 +772,7 @@ def _make_plan(run_id):
             'recent_news_sources_by_candidate': {idx: news_candidates[i] for idx, i in enumerate(shortlist) if i in news_candidates},
             'priority_news_sources_by_candidate': {idx: priority_candidates[i] for idx, i in enumerate(shortlist) if i in priority_candidates},
             'platform_topic_feedback': preferred_topics,
+            'platform_editorial_direction': direction,
             "news_priority_instruction": "同岗先选有原文及可核验画面的重大科技事件，其次近期普通新闻。时效与证据相近时按目标平台的同龄作品数据调整选题。既有报道只追有新增证据的进展。没有合适的新闻，再用真实场景补足。",
             "topic_coverage": plan.get("topic_coverage", {}),
             "editor_profiles": {k: editor_profile(k) for k in ("producer", "producer2", "producer3")}, "people_watchlist": people_context(),
@@ -780,7 +785,8 @@ def _make_plan(run_id):
     if len(indices) != target or len(set(indices)) != target or any(type(i) is not int or i < 0 or i >= len(plan["candidates"]) for i in indices):
         raise ValueError("负责人未提交有效且互不重复的生产计划")
     plan = {**plan, 'decision': decision, 'editorial_priority': {
-        'platform': platform, 'priority_candidates': priority_candidates, 'measured_topic_preferences': preferred_topics}}
+        'platform': platform, 'priority_candidates': priority_candidates, 'measured_topic_preferences': preferred_topics,
+        'platform_editorial_direction': direction}}
     owners = validate_editor_plan([plan["candidates"][idx] for idx in indices], sources, quotas) if quotas else None
     with SessionLocal() as db:
         db.get(FactoryRun, run_id).plan = plan
@@ -854,9 +860,11 @@ def _write_and_review(run_id, item_id):
             FactoryItem.status == "completed").order_by(FactoryItem.created_at.desc()).limit(10) if i.content.get("follow_prompt")]
     from services.factory_platform_style import platform_style
     route = brief.get('distribution') or {}
-    style = platform_style(route.get('platform'), shared=bool(route.get('release_plan')))
+    platform = route.get('platform') or (run.plan or {}).get('editorial_priority', {}).get('platform')
+    style = platform_style(platform, shared=bool(route.get('release_plan')))
     if style:
-        brief = {**brief, "platform_style": style}
+        from services.factory_work_metrics import platform_direction_brief
+        brief = {**brief, "platform_style": style, "platform_editorial_direction": platform_direction_brief(platform)}
         _save_item(item_id, brief=brief)
     if owner == "producer3" and not brief.get("research_packet"):
         from services.factory_newsroom import validate_packet

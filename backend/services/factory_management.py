@@ -7,10 +7,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import or_
 
 from services.factory_release_plan import PLATFORM_LIMITS
-from models.factory import FactoryAnalyticsSnapshot, FactoryGrowthPlan, FactoryItem, FactoryPublication, FactoryRun, FactoryWorkOrder
+from models.factory import FactoryAnalyticsSnapshot, FactoryConfig, FactoryGrowthPlan, FactoryItem, FactoryPublication, FactoryRun, FactoryWorkOrder
 from services.factory_editorial import validate_follow_prompt
 from services.factory_team import editor_id, editor_quotas
-from agents.registry import EDITOR_IDS, DAILY_EDITOR_QUOTAS, DAILY_TARGET
+from agents.registry import EDITOR_IDS, DAILY_TARGET
 from services.factory_editorial_policy import POLICY
 
 WEEKS = [
@@ -20,11 +20,11 @@ WEEKS = [
     {"week": 4, "focus": "复核可重复的内容方式", "actions": ["复测表现较好的结构，核对相同统计周期", "停止反复低效且没有明确改进依据的内容套路", "提交四平台月报、遗留问题和下月安排"], "decision": "报告未达标平台与原因，不承诺必然涨粉，不买粉、不互粉冲数"},
 ]
 RHYTHM = [
-    {"time": "00:30", "owner": "老周 / 小探", "task": "自动开工，筛选有出处的候选与素材，确定7条原创计划；小影4条、小影3三条；论文由小影2每周单独2条"},
+    {"time": "排期开工时", "owner": "老周 / 小探", "task": "按当前日配额筛选有出处和真实画面的候选；论文由小影2每周单独2条"},
     {"time": "制作过程中", "owner": "小文 / 小影 / 小审", "task": "按步骤交接；脚本、素材对齐或时长不合格时有界返工"},
     {"time": "每30秒", "owner": "老周", "task": "巡检生产、内存、失败和不确定回执，更新问题责任人"},
     {"time": "收到用户提供的数据后", "owner": "小数", "task": "整理本人提供的官方统计，保留日期、周期与缺失字段；不自动浏览账号后台"},
-    {"time": "三个平台7个时段", "owner": "小麦", "task": "每天交付7套成片和文案。抖音4条、快手2条、小红书1条。提交保留官方回执，评论由本人回复。"},
+    {"time": "各平台发布时段", "owner": "小麦", "task": "按启用平台交付成片和文案。视频任务与小红书长文各自登记，提交保留官方回执。"},
     {"time": "每周三 / 周六 20:00（长视频规划）", "owner": "小麦 / 小影", "task": "B站保留每周2条6–10分钟专题规划；长视频制作流程就绪后也只交付人工发布包"},
     {"time": "22:30", "owner": "老周", "task": "生成当日事实日报、未解决问题、优化验收与明日安排"},
 ]
@@ -42,23 +42,26 @@ UPGRADES["producer2"] = "真实论文PPT讲解，保留原文、方法图和实�
 UPGRADES["producer3"] = "为自己负责的视频打磨开场、转折和结尾；热点画面标明事件出处与时间，不能靠无关镜头制造刺激。"
 
 
-def _delivery_policy():
-    return {"distribution_policy": POLICY, "shorts_per_day": DAILY_TARGET,
-        "editor_quotas": dict(DAILY_EDITOR_QUOTAS), "max_short_submissions_per_day": DAILY_TARGET,
+def _delivery_policy(config=None):
+    target = config.daily_target if config else DAILY_TARGET
+    limits = {p: count for p, count in PLATFORM_LIMITS.items() if not config or p in config.platforms}
+    return {"distribution_policy": POLICY, "shorts_per_day": target,
+        "editor_quotas": editor_quotas(target), "max_short_submissions_per_day": min(target, sum(limits.values())),
         "short_seconds": 150, "delivery_mode": "scheduled",
-        "platform_delivery_modes": {"douyin": "automated", "kuaishou": "automated", "xiaohongshu": "automated", "bilibili": "manual"},
+        "platform_delivery_modes": {**dict.fromkeys(limits, "automated"), "bilibili": "manual"},
         "single_platform_per_original": True, "max_per_platform_per_day": 4, "platform_daily_limit": 4,
-        "delivery_format": "one-zip-per-original", "daily_zip_target": DAILY_TARGET,
-        "manual_platforms": ["xiaohongshu", "kuaishou"], "kuaishou_daily_limit": 2, "platform_daily_limits": dict(PLATFORM_LIMITS),
-        "douyin_per_editor": None, "weekly_paper_target": 2, "weekly_paper_weekdays": [2, 5], "manual_originals_per_day": DAILY_TARGET,
-        "account_automation_enabled": True, "automated_platforms": list(PLATFORM_LIMITS),
+        "delivery_format": "one-zip-per-original", "daily_zip_target": target,
+        "manual_platforms": ["xiaohongshu", "kuaishou"], "kuaishou_daily_limit": limits.get("kuaishou", 0), "platform_daily_limits": limits,
+        "douyin_per_editor": None, "weekly_paper_target": 2, "weekly_paper_weekdays": [2, 5], "manual_originals_per_day": target,
+        "account_automation_enabled": True, "automated_platforms": list(limits),
         "analytics_mode": "manual_or_historical"}
 
 
 def initialize(db):
+    delivery = _delivery_policy(db.get(FactoryConfig, 1))
     plan = db.get(FactoryGrowthPlan, 1)
     if plan:
-        delivery_policy = {**plan.policy, **_delivery_policy()}
+        delivery_policy = {**plan.policy, **delivery}
         delivery_policy.pop("platform_zip_quotas", None)
         if delivery_policy != plan.policy:
             plan.policy = delivery_policy
@@ -85,7 +88,7 @@ def initialize(db):
         baselines[platform] = {"followers": followers, "snapshot_id": snapshot.id if snapshot else None,
                                "observed_at": snapshot.collected_at.replace(tzinfo=timezone.utc).isoformat() if snapshot else None}
     plan = FactoryGrowthPlan(id=1, baselines=baselines, policy={"weeks": 4, "weekly_min": .05, "weekly_stretch": .10,
-        **_delivery_policy(),
+        **delivery,
         "bilibili": {"weekly_count": 2, "seconds_range": [360, 600],
         "weekdays": [2, 5], "publish_time": "20:00", "status": "awaiting_long_video_manual_delivery"}})
     db.add(plan); db.commit()
@@ -144,7 +147,8 @@ def sync_work_orders(db, state, analytics, now):
         FactoryItem.brief["distribution"]["day"].as_string() == local.date().isoformat())).all()
     runs = db.query(FactoryRun).filter(or_(FactoryRun.created_at >= start,
                                          FactoryRun.id.in_({i.run_id for i in items}))).all()
-    target = min(state["summary"]["target"] or plan.policy["shorts_per_day"], DAILY_TARGET)
+    daily_limit = plan.policy["shorts_per_day"]
+    target = min(state["summary"]["target"] or daily_limit, daily_limit)
     quotas = editor_quotas(target)
     current_run_ids = {r.id for r in runs if r.settings_snapshot.get("target_duration_seconds") == 150}
     items = [i for i in items if next((r.settings_snapshot.get('production_kind','daily') for r in runs if r.id == i.run_id), 'daily') == 'daily']
@@ -157,7 +161,7 @@ def sync_work_orders(db, state, analytics, now):
         ("researcher3", "05:15", "给小影3交接海外人物及公司事件素材", "每条交接保留原文逐字证据、事件日期、画面需求；实际下载另记，不以线索数量冒充素材", sum(bool(i.brief.get("research_packet")) for i in items if i.run_id in current_run_ids and editor_id(i) == "producer3"), quotas["producer3"]),
         ("writer", "05:30", "完成约150秒口播脚本", "每条脚本独立审核通过，开头承诺与自然关注提醒进入正文", len(approved), target),
         ("reviewer", "05:50", "核验事实、分镜与成片技术结果", "脚本审核与素材描述审核通过，成片技术检查有记录；逐帧语义抽检另列待验收", sum(i.review.get("approved") is True and i.content.get("editorial_review", {}).get("approved") is True and bool(i.media.get("quality")) for i in ready), target),
-        ("publisher", "22:15", "交付7套成片和发布包", "抖音4条、快手2条、小红书1条分别按排期提交。所有作品保留成片、封面、标题、正文、话题和AI声明。", delivered, target),
+        ("publisher", "22:15", f"交付{target}套成片和发布包", "按当前启用的视频排期提交。所有作品保留成片、封面、标题、正文、话题和AI声明。", delivered, target),
         ("analyst", "22:25", "整理人工提供的经营数据", "只用用户提供的官方统计或留存历史数据，标明数据日期、周期和缺失；不自动读取账号，等待人工数据时不编造增长", connected, 4),
         ("director", "22:30", "解决阻塞并提交当日管理日报", "问题明确责任人，日报包含实际结果、未完成项与明日安排", 0, 1),
     ]

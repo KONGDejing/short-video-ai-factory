@@ -10,7 +10,7 @@ from agents.registry import DAILY_TARGET
 from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
 from services import factory_publishing as publishing
 from services.factory_distribution import CURRENT_DISTRIBUTION_POLICY, local_day
-from services.factory_release_plan import ADDITIONAL_TIMES, DAILY_OUTPUT, THREE_PLATFORM_PLAN, scheduled_times
+from services.factory_release_plan import ADDITIONAL_TIMES, DAILY_OUTPUT, THREE_PLATFORM_PLAN, full_video_plan, scheduled_times
 from services.factory_resources import MemoryPressure, ensure_memory_available
 
 PREPARE_LEAD = timedelta(minutes=20)
@@ -275,7 +275,8 @@ def plan_production(db, config, now):
         previous_run = db.get(FactoryRun, slot.run_id) if slot.run_id else None
         if previous_run and previous_run.settings_snapshot.get('production_kind') == 'breaking_news':
             continue
-        if slot.platforms in (['kuaishou'], ['xiaohongshu']) and config.daily_target != DAILY_OUTPUT:
+        if slot.platforms in (['kuaishou'], ['xiaohongshu']) and (
+                not full_video_plan(config) or slot.platforms[0] not in config.platforms):
             continue
         item = db.get(FactoryItem, slot.item_id) if slot.item_id else None
         route = (item.brief or {}).get('distribution', {}) if item else {}
@@ -287,7 +288,7 @@ def plan_production(db, config, now):
         slots = [by_id[key] for key in run.settings_snapshot['release_slot_ids'] if key in by_id]
     if not slots:
         return {'status': 'no_slots'}
-    if len(slots) > (DAILY_OUTPUT if config.daily_target == DAILY_OUTPUT else 4):
+    if len(slots) > (config.daily_target if full_video_plan(config) else 4):
         return {'status': 'deferred', 'reason': '当天排期已超过日常配额'}
     if not run:
         same_day = [r for r in db.query(FactoryRun).filter(FactoryRun.created_at >= start,

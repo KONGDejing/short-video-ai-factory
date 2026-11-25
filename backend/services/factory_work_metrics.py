@@ -14,10 +14,37 @@ COMPARISON_DAYS = 14
 TOPICS = {
     '重大人事与公司决策': r'复职|回归|拍板|离职|卸任|任命|董事会|并购|收购|合并|重组|诉讼|调查|reinstat|acquisition|\bCEO\b',
     '科技股与产业': r'股价|股市|科技股|股大涨|收涨|收跌|市场反应|财报|关税|出口管制|上市|stock|earnings|\bIPO\b',
+    'AI场景对照': r'记住场景|场景变化|时序一致|实时改画面|实时变换|AI视频对照',
     '大模型与AI应用': r'大模型|模型.{0,8}(?:发布|更新|能力)|(?:GPT|Claude|Gemini|DeepSeek|千问|豆包|智能体|AI软件|AI应用|生成视频)',
     '机器人与前沿场景': r'机器人|机器手|具身|无人机|无人船|自动驾驶|航天|太空|火箭|robot|spacecraft',
     '芯片与智能硬件': r'芯片|算力|显卡|硬件|端侧|存储|\bGPU\b|chip',
 }
+
+PLATFORM_DIRECTIONS = {
+    'douyin': (
+        (('重大人事与公司决策', '机器人与前沿场景'),
+         '优先挑有新进展的知名人物与公司决策，或一眼能看懂的机器人真实操作。首镜头给当事人、原始公告或动作结果，开场一句说清变化和观众要追的问题。'),
+        (('芯片与智能硬件', '科技股与产业'),
+         '芯片能力与产业事件需要可核对的具体数字或前后差异，交代比较对象、口径与影响。'),
+    ),
+    'kuaishou': (
+        (('机器人与前沿场景', 'AI场景对照'),
+         '优先展示机器人怎么做、哪里失败、怎样改对，或模型对同一场景的前后差异。开场先给动作或结果，中间用日常话解释原因和能否用在真实环境。'),
+        (('科技股与产业',),
+         '产业和行情只用可核对的数字与具体影响开场，给出当天变化、比较基准及跟涨或回撤范围。'),
+    ),
+}
+
+
+def platform_direction(brief, platform):
+    """Tie-break equally fresh stories using the owner's account review."""
+    rules = PLATFORM_DIRECTIONS.get(platform, ())
+    name = topic(brief)
+    return next((rank for rank, (topics, _) in enumerate(rules) if name in topics), len(rules))
+
+
+def platform_direction_brief(platform):
+    return [guidance for _, guidance in PLATFORM_DIRECTIONS.get(platform, ())]
 
 
 def topic(brief):

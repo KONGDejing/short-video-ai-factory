@@ -16,6 +16,13 @@ from services import factory_service, factory_resources
 TZ = ZoneInfo("Asia/Shanghai")
 
 
+def test_removing_xiaohongshu_videos_retains_two_kuaishou_slots():
+    config = SimpleNamespace(daily_target=6, platforms=['douyin', 'kuaishou'],
+                             publish_times=['05:00', '05:30', '06:00', '06:30'])
+    slots = schedule.scheduled_times(config)
+    assert [platform for _, platform in slots] == ['douyin'] * 4 + ['kuaishou'] * 2
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     # These legacy receipt-state tests exercise the generic automated state
