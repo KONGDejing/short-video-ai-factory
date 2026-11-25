@@ -48,6 +48,24 @@ def job(db, item, platform='douyin', action='publish', status='queued', result=N
     return entry
 
 
+def test_two_platform_kuaishou_quota_accepts_third_item_but_blocks_fourth(db):
+    from services.factory_release_plan import THREE_PLATFORM_PLAN
+
+    run, items = run_items(db, ['一', '二', '三', '四'])
+    run.settings_snapshot = {**run.settings_snapshot, 'release_plan': THREE_PLATFORM_PLAN,
+                             'platforms': ['douyin', 'kuaishou']}
+    for item in items:
+        item.brief = {'editor_id': 'producer', 'distribution': {
+            **route('kuaishou'), 'editor_id': 'producer', 'kuaishou_selected': True,
+            'release_plan': THREE_PLATFORM_PLAN}}
+    job(db, items[0], platform='kuaishou', status='submitted')
+    job(db, items[1], platform='kuaishou', status='submitted')
+    assert distribution.guard_publication(db, items[2], 'kuaishou', 'prepare', now=NOW)['day'] == DAY
+    job(db, items[2], platform='kuaishou', action='prepare')
+    with pytest.raises(ValueError, match='3条作品'):
+        distribution.guard_publication(db, items[3], 'kuaishou', 'prepare', now=NOW)
+
+
 
 
 

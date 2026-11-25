@@ -10,7 +10,7 @@ from agents.registry import DAILY_TARGET
 from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
 from services import factory_publishing as publishing
 from services.factory_distribution import CURRENT_DISTRIBUTION_POLICY, local_day
-from services.factory_release_plan import ADDITIONAL_TIMES, DAILY_OUTPUT, THREE_PLATFORM_PLAN, full_video_plan, scheduled_times
+from services.factory_release_plan import DAILY_OUTPUT, THREE_PLATFORM_PLAN, full_video_plan, scheduled_times, video_times
 from services.factory_resources import MemoryPressure, ensure_memory_available
 
 PREPARE_LEAD = timedelta(minutes=20)
@@ -155,7 +155,7 @@ def plan_slots(db, config, now):
             if slot.platforms != ['kuaishou'] or slot.status in FINAL or slot.run_id or slot.item_id:
                 continue
             local_clock = (slot.nominal_at or slot.due_at).replace(tzinfo=timezone.utc).astimezone(now.tzinfo).strftime('%H:%M')
-            if local_clock not in ADDITIONAL_TIMES['kuaishou']:
+            if local_clock not in video_times('kuaishou', config.platforms):
                 slot.status = 'cancelled'
                 slot.results = {'kuaishou': _result('cancelled', '按当前快手日配额取消额外时段')}
         for slot in existing:

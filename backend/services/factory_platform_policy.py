@@ -47,14 +47,14 @@ def analytics_state(platform):
             "reason": "账号数据自动采集保持关闭；由本人提供官方数据，历史统计及采集时间保留。"}
 
 
-def automation_state(platform):
+def automation_state(platform, *, limits=PLATFORM_LIMITS):
     platform = str(platform).strip().lower()
     enabled = automation_enabled(platform)
     return {
         "platform": platform,
         "mode": "automated" if enabled else "manual",
         "enabled": enabled,
-        "reason": (f'日常排期每天{PLATFORM_LIMITS[platform]}条独立原创，提交时声明AI制作，保留官方回执。'
+        "reason": (f'日常排期每天{limits.get(platform, PLATFORM_LIMITS[platform])}条独立原创，提交时声明AI制作，保留官方回执。'
                    if enabled else '账号自动化已停用，由本人使用平台官方客户端发布。'),
     }
 

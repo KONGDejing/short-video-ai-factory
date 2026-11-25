@@ -6,7 +6,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 from sqlalchemy import or_
 
-from services.factory_release_plan import PLATFORM_LIMITS
+from services.factory_release_plan import PLATFORM_LIMITS, video_platform_limits
 from models.factory import FactoryAnalyticsSnapshot, FactoryConfig, FactoryGrowthPlan, FactoryItem, FactoryPublication, FactoryRun, FactoryWorkOrder
 from services.factory_editorial import validate_follow_prompt
 from services.factory_team import editor_id, editor_quotas
@@ -44,7 +44,7 @@ UPGRADES["producer3"] = "为自己负责的视频打磨开场、转折和结尾�
 
 def _delivery_policy(config=None):
     target = config.daily_target if config else DAILY_TARGET
-    limits = {p: count for p, count in PLATFORM_LIMITS.items() if not config or p in config.platforms}
+    limits = video_platform_limits(config.platforms) if config else dict(PLATFORM_LIMITS)
     return {"distribution_policy": POLICY, "shorts_per_day": target,
         "editor_quotas": editor_quotas(target), "max_short_submissions_per_day": min(target, sum(limits.values())),
         "short_seconds": 150, "delivery_mode": "scheduled",

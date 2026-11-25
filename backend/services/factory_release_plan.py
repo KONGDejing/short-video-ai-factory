@@ -7,16 +7,31 @@ DAILY_OUTPUT = sum(PLATFORM_LIMITS.values())
 AI_DISCLOSURE = '内容由AI生成（AI辅助文案、配音与剪辑）'
 
 
+def video_platform_limits(platforms):
+    limits = {platform: count for platform, count in PLATFORM_LIMITS.items() if platform in platforms}
+    if set(limits) == {'douyin', 'kuaishou'}:
+        limits['kuaishou'] += PLATFORM_LIMITS['xiaohongshu']
+    return limits
+
+
+def video_times(platform, platforms):
+    if platform not in platforms:
+        return ()
+    clocks = ADDITIONAL_TIMES.get(platform, ())
+    if platform == 'kuaishou' and video_platform_limits(platforms)[platform] == 3:
+        return (*clocks, '10:00')
+    return clocks
+
+
 def full_video_plan(config):
     """A full daily video plan uses the quotas of the enabled video destinations."""
-    enabled = set(config.platforms) & PLATFORM_LIMITS.keys()
-    return bool(enabled - {'douyin'}) and config.daily_target == sum(PLATFORM_LIMITS[p] for p in enabled)
+    limits = video_platform_limits(config.platforms)
+    return bool(limits.keys() - {'douyin'}) and config.daily_target == sum(limits.values())
 
 
 def scheduled_times(config):
     clocks = [(clock, 'douyin') for clock in config.publish_times]
     if full_video_plan(config):
-        for platform, values in ADDITIONAL_TIMES.items():
-            if platform in config.platforms:
-                clocks.extend((clock, platform) for clock in values)
+        for platform in ADDITIONAL_TIMES:
+            clocks.extend((clock, platform) for clock in video_times(platform, config.platforms))
     return sorted(clocks)

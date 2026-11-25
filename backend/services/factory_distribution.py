@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import update
 
 from models.factory import FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
-from services.factory_release_plan import DAILY_OUTPUT, PLATFORM_LIMITS, THREE_PLATFORM_PLAN
+from services.factory_release_plan import DAILY_OUTPUT, PLATFORM_LIMITS, THREE_PLATFORM_PLAN, video_platform_limits
 
 CURRENT_DISTRIBUTION_POLICY = "douyin-four-random-v1"
 DISTRIBUTION_PLATFORMS = ("douyin", "xiaohongshu", "kuaishou")
@@ -171,7 +171,10 @@ def guard_publication(db, item, platform, action, *, timezone_name='Asia/Shangha
             if _extra_breaking_item(db, peer, today) or
             (not crosspost and authorized_owner_crosspost(db, peer, platform, today, include_completed=True)))
     makeup = authorized_makeup(db, run, today) if platform == 'douyin' else None
-    limit = (makeup[1] if makeup else PLATFORM_LIMITS[platform]) + int(crosspost)
+    limits = video_platform_limits(run.settings_snapshot.get('platforms', PLATFORM_LIMITS))
+    if platform not in limits:
+        raise ValueError('此平台未启用短视频发布')
+    limit = (makeup[1] if makeup else limits[platform]) + int(crosspost)
     if not extra and len(occupied) >= limit:
         raise ValueError(f'该平台当天已预留或提交{limit}条作品，未知结果也占额度')
     return {'policy': CURRENT_DISTRIBUTION_POLICY, 'day': today, 'editor_id': owner,
@@ -231,6 +234,7 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
         return {item.id: route}
     weekly = run.settings_snapshot.get('production_kind') == 'weekly_papers'
     multi = run.settings_snapshot.get('release_plan') == THREE_PLATFORM_PLAN and not weekly
+    limits = video_platform_limits(run.settings_snapshot.get('platforms', PLATFORM_LIMITS))
     slot_keys = run.settings_snapshot.get('release_slot_ids', [])
     only_slot = db.get(FactoryRelease, slot_keys[0]) if multi and run.target_count == 1 and len(slot_keys) == 1 else None
     fixed = only_slot.platforms[0] if only_slot and len(only_slot.platforms) == 1 else None
@@ -268,14 +272,16 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
             crossposts = {i.id for i in daily if authorized_owner_crosspost(
                 db, i, 'douyin', planned, include_completed=True)}
             extras = {i.id for i in daily if _extra_breaking_item(db, i, planned)}
+            group_ids = {i.id for i in group}
             originals = [i for i in daily if i.id not in crossposts | extras
+                         and (i.id in group_ids or i.brief['distribution'].get('platform') is None
+                              or i.brief['distribution'].get('platform') in limits)
                          and not i.brief.get('distribution', {}).get('carried_from')
                          and not (carried_from and i.run_id == run.id)]
             if (len(originals) > (DAILY_OUTPUT if multi else 6)
                     or sum(editor_id(i) == 'producer' for i in originals) > 4
                     or sum(editor_id(i) == 'producer3' for i in originals) > (3 if multi else 2)):
                 raise ValueError('当天原创数量或剪辑岗位配额已用完')
-            group_ids = {i.id for i in group}
             reserved = reserved_item_ids(db, 'douyin', planned, include_prepares=True,
                 timezone_name=run.settings_snapshot.get('timezone', 'Asia/Shanghai'))
             outside = reserved - group_ids
@@ -321,7 +327,7 @@ def assign_distribution(db, run_id, day=None, slots=None, proposal=None):
                 occupied.update(i.id for i in items
                     if i.brief.get('distribution', {}).get('day') == planned
                     and i.brief['distribution'].get('platform') == platform)
-                remaining = max(0, PLATFORM_LIMITS[platform] - len(occupied))
+                remaining = max(0, limits[platform] - len(occupied))
                 for key in available[:remaining]:
                     secondary[key] = platform
                 del available[:remaining]
