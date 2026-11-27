@@ -452,6 +452,8 @@ def _make_plan(run_id):
     with SessionLocal() as db:
         run = db.get(FactoryRun, run_id)
         sources, plan, target = run.sources or [], run.plan or {}, run.target_count
+        automatic_retries = run.settings_snapshot.get("automatic_production_retries", 0)
+        deprioritized_sources = set(run.settings_snapshot.get("retry_deprioritized_sources", []))
         visual_style = run.settings_snapshot.get("visual_style", "cards")
         quotas = run.settings_snapshot.get("editor_quotas")
         recent_items = db.query(FactoryItem).filter(FactoryItem.run_id != run_id).order_by(
@@ -478,7 +480,7 @@ def _make_plan(run_id):
         check_cancel(run_id)
         emit(run_id, "researcher", "researching", "正在采集 AI 官方资料，保存来源和发布时间")
         from services.factory_research import collect_sources
-        research = collect_sources(limit=min(24, max(10, target * 3)))
+        research = collect_sources(limit=min(24, max(10, target * 3) + automatic_retries * 4))
         sources = research["sources"]
         from services.factory_newsroom import collect_newsroom_sources
         emit(run_id, "researcher3", "newsroom_intake", "小探3正在核对海外人物及14家核心科技公司的新闻原文，按40位海外/10位国内观察池找事件")
@@ -535,7 +537,8 @@ def _make_plan(run_id):
                 elif quotas and not quotas.get(owner, 0):
                     source["visual_preflight"]["reason"] = "editor_has_no_quota"
                 else:
-                    buckets[owner].append((source['id'] != breaking_source, source['id'] not in priority_ids, source['id'] not in recent_ids,
+                    buckets[owner].append((source['id'] != breaking_source, source['id'] in deprioritized_sources,
+                                           source['id'] not in priority_ids, source['id'] not in recent_ids,
                                            not hint, source['url'].rstrip('/') not in catalog_urls, source))
             for owner in owners:
                 buckets[owner].sort(key=lambda row: row[:-1])
@@ -685,6 +688,7 @@ def _make_plan(run_id):
             assignment['breaking_news_instruction'] = '本轮只做指定突发事件，source_ids必须包含其原文ID。给出有清楚证据和可用画面的独立叙事角度。相关资料只补背景，素材不足就报告缺口。'
         if run.trigger == 'release_clock':
             assignment["coverage_instruction"] += " 本次是按时段制作一条，优先从北京时间开工当天及近期的原始消息选题，按这次的岗位配额给候选，结合已有作品去重。"
+            assignment["source_id_contract"] += " 先找已核验、匹配本岗位且未制作的可用选题。若当日热点没有足量画面，把它单独记入待补素材，同轮改选已有真实画面的近期科技题，不要让所有候选都依赖缺画面的新闻。"
         for attempt in range(2):
             research = call_agent(run_id, "researcher", assignment, max_tokens=max(3500, (target + 2) * 550))
             raw_candidates = research.get("candidates") if isinstance(research, dict) else None
@@ -708,7 +712,7 @@ def _make_plan(run_id):
             if material_only and run.trigger == "release_clock":
                 cited = {ref for candidate in raw_candidates
                          for ref in candidate.get("source_ids", []) + candidate.get("visual_source_ids", [])}
-                has_alternative = any(s.get("visual_ready") and s["id"] not in cited for s in usable)
+                has_alternative = any((s.get("visual_ready") or s.get("visual_assets")) and s["id"] not in cited for s in usable)
             if attempt or (material_only and not has_alternative):
                 ready = {key: min(counts[key], count) for key, count in (quotas or {}).items()}
                 if not candidates or (quotas and not sum(ready.values())):
@@ -1129,6 +1133,7 @@ def _render(run_id, item_id):
         brief = item.brief
         run = db.get(FactoryRun, run_id)
         run_sources = run.sources
+        retry_feedback = {"error": item.error} if run.settings_snapshot.get("automatic_production_retries") and item.error else None
         visual_style = run.settings_snapshot.get("visual_style", "cards")
         target_duration = run.settings_snapshot.get("target_duration_seconds")
         if visual_style == 'tech_montage' and run.settings_snapshot.get('cyberpunk_style'):
@@ -1238,7 +1243,8 @@ def _render(run_id, item_id):
         from services.factory_montage import read_subtitle_cues
         timing_context = {'duration': voice['duration'], 'cues': read_subtitle_cues(Path(voice['subtitle_path']))}
     emit(run_id, owner, "rendering", f"规划演示镜头并合成配音：{content['title']}" if assets else f"规划画面并合成真实配音：{content['title']}")
-    arrangement = _plan_edit(run_id, content, assets, visual_style, owner=owner, timing=timing_context)
+    arrangement = _plan_edit(run_id, content, assets, visual_style, owner=owner, timing=timing_context,
+                             initial_feedback=retry_feedback)
     scenes = arrangement.get("scenes", [])
     if content.get("background_visuals"):
         scenes = [{**scene, "evidence_role": "background"} for scene in scenes]

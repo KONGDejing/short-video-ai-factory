@@ -170,6 +170,64 @@ def test_clock_production_uploads_as_soon_as_media_is_ready_even_after_fifteen_m
     assert env.begin.call_args.args[-2:] == ("publish", "douyin")
 
 
+@pytest.mark.parametrize("with_item", [False, True])
+def test_clock_production_automatically_recovers_same_slot(env, monkeypatch, with_item):
+    from tasks.factory_tasks import produce_run
+
+    db, config = env.db, env.config
+    config.production_on_release_clock = True
+    config.publish_times = ["05:00", "05:30", "06:00", "06:30"]
+    nominal = datetime(2026, 11, 10, 5, tzinfo=TZ)
+    slot = FactoryRelease(nominal_at=schedule.utc(nominal), due_at=schedule.utc(nominal),
+                          platforms=["douyin"], status="waiting_media")
+    db.add(slot)
+    db.flush()
+    run = FactoryRun(schedule_key=f"clock:{slot.id}", status="failed", target_count=1,
+                     trigger=schedule.CLOCK_TRIGGER, finished_at=slot.due_at + timedelta(minutes=5),
+                     sources=[{"id": "no-video", "visual_preflight": {"verified_assets": 0}}],
+                     plan={"candidates": [{"title": "旧选题"}]}, error="素材不够",
+                     settings_snapshot={"release_slot_ids": [slot.id],
+                                        "distribution_policy": schedule.CURRENT_DISTRIBUTION_POLICY})
+    db.add(run)
+    db.flush()
+    run.active_slot = None
+    slot.run_id = run.id
+    if with_item:
+        item = FactoryItem(run_id=run.id, position=0, status="failed",
+                           error="分镜需要重排", review={"approved": True})
+        db.add(item)
+        db.flush()
+        slot.item_id = item.id
+        receipt = FactoryPublication(item_id=item.id, platform="douyin", action="publish", status="failed")
+        db.add(receipt)
+    db.commit()
+    enqueue = Mock(return_value=SimpleNamespace(id="test-task"))
+    monkeypatch.setattr(produce_run, "delay", enqueue)
+    monkeypatch.setattr(factory_service, "queue_available", lambda: True)
+
+    assert schedule.plan_production(db, config, nominal + timedelta(minutes=29))["status"] == "waiting"
+    enqueue.assert_not_called()
+    now = nominal + timedelta(minutes=30)
+    if with_item:
+        assert schedule.plan_production(db, config, now)["status"] == "waiting"
+        enqueue.assert_not_called()
+        db.delete(receipt)
+        db.commit()
+    assert schedule.plan_production(db, config, now + timedelta(days=1))["status"] == "waiting"
+    assert schedule.plan_production(db, config, now)["automatic_production_retry"] == 1
+    enqueue.assert_called_once_with(run.id)
+    assert slot.run_id == run.id
+    assert run.status == "queued" and run.task_id == "test-task"
+    if with_item:
+        assert item.status == "planned" and item.review == {"approved": True}
+        assert item.error == "分镜需要重排"
+    else:
+        assert run.sources == [] and run.plan == {}
+        assert run.settings_snapshot["retry_deprioritized_sources"] == ["no-video"]
+    assert schedule.plan_production(db, config, now)["status"] == "waiting"
+    enqueue.assert_called_once()
+
+
 
 
 def test_prepared_video_waits_until_due_and_submits_once(env):

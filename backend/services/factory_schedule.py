@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from secrets import randbelow
 from math import ceil
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from agents.registry import DAILY_TARGET
 
 from models.factory import FactoryEvent, FactoryItem, FactoryPublication, FactoryRelease, FactoryRun
@@ -17,6 +18,8 @@ PREPARE_LEAD = timedelta(minutes=20)
 LATE_WINDOW = timedelta(minutes=15)
 FINAL = {"submitted", "missed", "partial", "cancelled", "manual_ready"}
 CLOCK_TRIGGER = "release_clock"
+CLOCK_RETRY_DELAY = timedelta(minutes=25)
+CLOCK_RETRY_LIMIT = 2
 
 
 def nominal_time():
@@ -338,7 +341,7 @@ def plan_clock_production(db, config, now):
             try:
                 ensure_memory_available()
                 run = start_run(db, target_count=1, trigger=CLOCK_TRIGGER, schedule_key=key,
-                                release_slot_ids=[slot.id], editor_quota_override=quotas)
+                                release_slot_ids=[slot.id], editor_quota_override=quotas, now=now)
             except (ValueError, RuntimeError, MemoryPressure) as exc:
                 result = {platform: _result('queued', f'已到开工时间，等待生产：{exc}')}
                 if slot.status != 'queued' or slot.results != result:
@@ -349,7 +352,81 @@ def plan_clock_production(db, config, now):
             slot.run_id, slot.position = run.id, 0
         db.commit()
         return {'run_id': run.id, 'status': run.status}
+    if config.publish_enabled:
+        recoverable = [slot for slot in slots if
+                       (planned := by_clock.get(slot.nominal_at or slot.due_at)) and slot.platforms == [planned[1]]]
+        recovery = retry_clock_production(db, recoverable, now)
+        if recovery:
+            return recovery
     return {'status': 'waiting'}
+
+
+def retry_clock_production(db, slots, now):
+    """Resume today's failed production without occupying another release slot."""
+    from services.factory_service import queue_available
+
+    if db.query(FactoryRun.id).filter(FactoryRun.active_slot.isnot(None)).first():
+        return None
+    instant = utc(now)
+    for slot in slots:
+        if not slot.run_id or slot.due_at > instant or slot.status not in {'scheduled', 'waiting_media'}:
+            continue
+        run = db.get(FactoryRun, slot.run_id)
+        if not run or run.schedule_key != f'clock:{slot.id}' or run.trigger != CLOCK_TRIGGER:
+            continue
+        snapshot = run.settings_snapshot
+        retries = snapshot.get('automatic_production_retries', 0)
+        token_limit = snapshot.get('max_total_tokens', 0)
+        if (run.status not in {'failed', 'partial'} or run.cancel_requested or run.completed_count
+                or run.target_count != 1 or snapshot.get('release_slot_ids') != [slot.id]
+                or snapshot.get('distribution_policy') != CURRENT_DISTRIBUTION_POLICY
+                or retries >= CLOCK_RETRY_LIMIT or run.llm_calls >= snapshot.get('max_llm_calls', 32)
+                or (token_limit and run.input_tokens + run.output_tokens >= token_limit)
+                or not run.finished_at or instant < run.finished_at + CLOCK_RETRY_DELAY
+                or instant + CLOCK_RETRY_DELAY >= deadline(db, slot)):
+            continue
+        item = db.query(FactoryItem).filter_by(run_id=run.id).first()
+        if slot.item_id and (not item or item.id != slot.item_id):
+            continue
+        if item and (item.status != 'failed' or (item.media or {}).get('publication_hold')
+                     or db.query(FactoryPublication.id).filter_by(item_id=item.id).first()):
+            continue
+        try:
+            ensure_memory_available()
+        except MemoryPressure:
+            return None
+        if not queue_available():
+            return None
+
+        snapshot = {**snapshot, 'automatic_production_retries': retries + 1}
+        if item is None:
+            failed_sources = [s['id'] for s in run.sources if s.get('visual_preflight', {}).get('verified_assets') == 0]
+            snapshot['retry_deprioritized_sources'] = list(dict.fromkeys([
+                *snapshot.get('retry_deprioritized_sources', []), *failed_sources]))
+            run.sources, run.plan = [], {}
+        else:
+            item.status, item.revisions = 'planned', 0
+        run.settings_snapshot = snapshot
+        error = run.error or (item.error if item else None)
+        run.status, run.stage, run.active_slot = 'queued', 'queued', 'factory'
+        run.error, run.finished_at, run.heartbeat_at, run.task_id = None, None, instant, None
+        db.add(FactoryEvent(run_id=run.id, agent_id='director', stage='automatic_production_retry', status='queued',
+            message=f'当天第{retries + 1}次自动恢复原档期' + ('，沿用已审稿件及失败反馈' if item else '，重采资料并优先核验其他候选'),
+            detail={'release_id': slot.id, 'previous_error': error}))
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            return None
+        from tasks.factory_tasks import produce_run
+        try:
+            run.task_id = produce_run.delay(run.id).id
+        except Exception:
+            # The durable active run is retried by the queue watchdog.
+            run.heartbeat_at = instant - timedelta(minutes=11)
+        db.commit()
+        return {'status': 'queued', 'run_id': run.id, 'automatic_production_retry': retries + 1}
+    return None
 
 
 def _result(status, message, job=None):
