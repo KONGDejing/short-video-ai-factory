@@ -528,8 +528,9 @@ def _make_plan(run_id):
                 if hint not in owners:
                     hint = {"researcher2": "producer2", "researcher3": "producer3"}.get(source.get("researcher_id"))
                 company_event = is_major_event(source) or EVENT_LEAD.search(source.get("title") or "")
+                newsroom_handoff = (quotas or {}).get("producer3") and source.get("watch_company")
                 owner = hint or ("producer2" if is_paper_story({}, [source]) else
-                    "producer3" if company_event else "producer")
+                    "producer3" if company_event or newsroom_handoff else "producer")
                 source["visual_ready"], source["visual_assets"] = False, []
                 source["visual_preflight"] = {"status": "not_checked", "editor_id": owner}
                 if source.get("kind") == "reference_index":

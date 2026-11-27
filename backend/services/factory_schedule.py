@@ -388,7 +388,7 @@ def retry_clock_production(db, slots, now):
         item = db.query(FactoryItem).filter_by(run_id=run.id).first()
         if slot.item_id and (not item or item.id != slot.item_id):
             continue
-        if item and (item.status != 'failed' or (item.media or {}).get('publication_hold')
+        if item and (item.status in {'completed', 'deferred', 'cancelled'} or (item.media or {}).get('publication_hold')
                      or db.query(FactoryPublication.id).filter_by(item_id=item.id).first()):
             continue
         try:
