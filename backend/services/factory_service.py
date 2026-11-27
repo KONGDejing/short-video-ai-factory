@@ -16,7 +16,9 @@ from services.factory_llm import call_agent, RunCancelled, ModelServiceUnavailab
 from services.factory_resources import MemoryPressure, ensure_memory_available
 from services.factory_editorial import STRATEGY, validate_editorial_scenes, validate_follow_prompt
 from services.factory_team import assign_editors, editor_id, editor_quotas, validate_editor_plan, candidate_editor
-from services.factory_editorial_policy import POLICY, editor_profile, editorial_policy, people_context
+from services.factory_editorial_policy import (
+    POLICY, SPACE_TOPIC_PATTERN, editor_profile, editorial_policy, is_space_story, people_context,
+)
 from services.factory_usage import item_usage, batch_usage, usage_context, summarize_usage
 
 TERMINAL = {"completed", "partial", "failed", "cancelled", "paused_memory"}
@@ -449,6 +451,8 @@ def _eligible_candidates(candidates, sources, visual_style, *, with_diagnostics=
 
 @batch_usage("planning")
 def _make_plan(run_id):
+    from services.factory_distribution import local_day, priority_news_sources, recent_news_sources
+
     with SessionLocal() as db:
         run = db.get(FactoryRun, run_id)
         sources, plan, target = run.sources or [], run.plan or {}, run.target_count
@@ -465,6 +469,20 @@ def _make_plan(run_id):
         slot = db.get(FactoryRelease, slot_ids[0]) if len(slot_ids) == 1 else None
         platform = slot.platforms[0] if slot and len(slot.platforms) == 1 else 'douyin'
         breaking_source = run.settings_snapshot.get('breaking_news_source_id')
+        kind = run.settings_snapshot.get('production_kind', 'daily')
+        zone = run.settings_snapshot.get('timezone', 'Asia/Shanghai')
+        day = run.settings_snapshot.get('production_day') or local_day(run.created_at, zone)
+        space_target = editorial_policy()['production']['space_focus_per_platform'].get(platform, 0)
+        space_count = sum(
+            item.status == 'completed' and route.get('day') == day and route.get('platform') == platform
+            and (is_space_story(item.brief) or is_space_story(item.content or {}))
+            for item in recent_items if (route := item.brief.get('distribution'))
+        )
+        space_focus_due = (
+            run.trigger == 'release_clock' and slot is not None and len(slot.platforms) == 1
+            and target == 1 and kind == 'daily' and visual_style == 'tech_montage'
+            and not breaking_source and space_count < space_target
+        )
         seeded_ids = set(run.settings_snapshot.get('owner_seeded_item_ids') or [])
         seeded = db.query(FactoryItem).filter(FactoryItem.run_id == run_id, FactoryItem.id.in_(seeded_ids)).all() if seeded_ids else []
         if seeded_ids and (len(seeded) != len(seeded_ids) or any(i.status != 'completed' for i in seeded)):
@@ -480,7 +498,8 @@ def _make_plan(run_id):
         check_cancel(run_id)
         emit(run_id, "researcher", "researching", "正在采集 AI 官方资料，保存来源和发布时间")
         from services.factory_research import collect_sources
-        research = collect_sources(limit=min(24, max(10, target * 3) + automatic_retries * 4))
+        space_intake = {"prefer_space": True, "covered_sources": covered_sources} if space_focus_due else {}
+        research = collect_sources(limit=min(24, max(10, target * 3) + automatic_retries * 4), **space_intake)
         sources = research["sources"]
         from services.factory_newsroom import collect_newsroom_sources
         emit(run_id, "researcher3", "newsroom_intake", "小探3正在核对海外人物及14家核心科技公司的新闻原文，按40位海外/10位国内观察池找事件")
@@ -500,13 +519,12 @@ def _make_plan(run_id):
     if major_events:
         emit(run_id, 'researcher3', 'major_event_watch', '已发现重大事件原始公告；事实核查与画面制作分开跟进',
              'warning', {'events': major_events, 'instruction': '必须逐项交代选用、待核查或待补画面原因，不能因没有视频而静默漏报'})
-    from services.factory_distribution import local_day, priority_news_sources, recent_news_sources
-    news_first = run.settings_snapshot.get('news_first') and run.settings_snapshot.get('production_kind') != 'weekly_papers'
-    zone = run.settings_snapshot.get('timezone', 'Asia/Shanghai')
-    day = run.settings_snapshot.get('production_day') or local_day(run.created_at, zone)
+    news_first = run.settings_snapshot.get('news_first') and kind != 'weekly_papers'
     recent_ids = set(recent_news_sources({'freshness': 'news', 'source_ids': [s['id'] for s in sources]}, sources, day, zone)) if news_first else set()
     priority_ids = set(priority_news_sources({'freshness': 'news', 'source_ids': list(recent_ids)},
                                             sources, day, zone)) - covered_sources
+    space_source_ids = {s['id'] for s in sources if s.get('kind') in {'news', 'evergreen'}
+                        and is_space_story(s)} - covered_sources - deprioritized_sources
     preferred_topics = []
     if news_first:
         from services.factory_work_metrics import recommend_topics, topic
@@ -539,7 +557,9 @@ def _make_plan(run_id):
                     source["visual_preflight"]["reason"] = "editor_has_no_quota"
                 else:
                     buckets[owner].append((source['id'] != breaking_source, source['id'] in deprioritized_sources,
-                                           source['id'] not in priority_ids, source['id'] not in recent_ids,
+                                           source['id'] not in priority_ids,
+                                           space_focus_due and source['id'] not in space_source_ids,
+                                           source['id'] not in recent_ids,
                                            not hint, source['url'].rstrip('/') not in catalog_urls, source))
             for owner in owners:
                 buckets[owner].sort(key=lambda row: row[:-1])
@@ -600,6 +620,7 @@ def _make_plan(run_id):
             "AI工具应用": r"AI tool|AI assistant|AI application|Claude Code|ChatGPT|text.to.speech|speech synthesis|AI工具|AI应用|语音合成|视频生成|工作流",
             "论文": r"paper|preprint|论文|预印本",
             "展会争议": r"\bCES\b|trade show|exhibition|lawsuit|controversy|export control|展会|峰会|争议|诉讼|出口管制",
+            "航天与宇宙": SPACE_TOPIC_PATTERN,
         }
         topic_sources = {topic: [] for topic in topic_patterns}
         named_model = re.compile(r"GPT[\s‐‑–-]*\d[\w.-]*|Claude\s+(?!Code\b)(?:[A-Za-z]+\s+){0,2}\d[\w.-]*|Gemini\s*\d[\w.-]*|Llama[\s-]*\d|DeepSeek[\s-]*(?:V|R)\d|Qwen[\s-]*\d|Kimi\s*K\d|GLM[\s-]*\d", re.I)
@@ -660,7 +681,7 @@ def _make_plan(run_id):
                     "note": "标签仅表示本题与所引原文存在对应内容，不证明每日更新、独立实测或已有足量视频；单题可含多标签，不按模型自报标签补齐缺口。"}
 
         source_coverage = coverage_for([])
-        emit(run_id, "researcher", "topic_coverage", "已检查七类题材的来源覆盖；缺口如实记录，大模型须主动检索", "completed", source_coverage)
+        emit(run_id, "researcher", "topic_coverage", "已检查重点题材的来源覆盖；缺口如实记录，大模型须主动检索", "completed", source_coverage)
         emit(run_id, "researcher", "researching", "正在依据资料筛选选题，区分新闻与常青教程")
         assignment = {"target": target + 2, "production_target": target, "production_kind": run.settings_snapshot.get("production_kind", "daily"), "sources": usable,
             "editor_quotas": quotas,
@@ -673,7 +694,7 @@ def _make_plan(run_id):
             "topic_coverage": source_coverage,
             "editor_profiles": {k: editor_profile(k) for k in ("producer", "producer2", "producer3")},
             "people_watchlist": people_context(),
-            "coverage_instruction": "每日必须主动检查通用大模型的新能力、推理、开源或成本进展，优先真实带日期的发布方原文。同时检查机器人、算力基础设施、端侧芯片、AI工具应用、论文、展会争议。单题可多标签；端侧应用不等于端侧芯片，不把机器人模型冒充通用大模型。不是每天强制凑齐七类：缺原文或对应视频就在coverage_gaps说明，并保留已核验候选，不编造参数或素材。",
+            "coverage_instruction": "每日必须主动检查通用大模型的新能力、推理、开源或成本进展，优先真实带日期的发布方原文。同时检查机器人、算力基础设施、端侧芯片、AI工具应用、论文、展会争议和航天宇宙。单题可多标签；端侧应用不等于端侧芯片，不把机器人模型冒充通用大模型。缺原文或对应视频就在coverage_gaps说明，并保留已核验候选，不编造参数或素材。",
             "source_id_contract": "source_ids和visual_source_ids只填source_catalog的source_id（正文页面ID）。同页已同时提供事实和演示时，直接填source_ids即可。多页支持同一题时可联合引用，至少3条按原片去重的核验视频；另引画面时写visual_support_reason，说明具体关联及证据边界。视频asset_id留给剪辑。",
             "major_events": major_events,
             "major_event_instruction": "优先核对这些已采集的重大事件。每项必须在breaking_event_status列出source_id、已证实事实、未确认信息、是否推荐及缺画面原因。缺视频只影响制作就绪，不能把事件当作不存在；虚构反讽需另立创作任务，不冒充新闻实录。",
@@ -684,6 +705,12 @@ def _make_plan(run_id):
                 "asset_ids_for_editing_only": [a["id"] for a in s.get("visual_assets", []) if a.get("id")]}
                 for s in usable],
             "visual_constraint": "先写完整口播再匹配画面。论文选题必须有对应论文原文，制作会提取真实PDF页面及图表，不能用其他研究的背景演示代替。其他选题需有本题可核验画面线索。素材不足不凑数。"}
+        if space_focus_due:
+            assignment["space_focus_instruction"] = (
+                "这个平台今天还缺航天宇宙作品。符合本轮岗位、原文支持且画面核验充分时，给出一条尚未报道的选题，"
+                "标题写明确的航天或天文主体，引用对应任务原始资料。实拍与观测作主线，科幻感来自画面节奏和有标注的解释动画。"
+                "标明资料镜头的任务和日期，区分实拍、数据可视化、任务动画和AI示意。同期重大科技新闻继续提报，素材不足就交其他合格选题。"
+            )
         if breaking_source:
             assignment['breaking_news_source_id'] = breaking_source
             assignment['breaking_news_instruction'] = '本轮只做指定突发事件，source_ids必须包含其原文ID。给出有清楚证据和可用画面的独立叙事角度。相关资料只补背景，素材不足就报告缺口。'
@@ -756,10 +783,15 @@ def _make_plan(run_id):
                  if quotas and quotas.get(candidate_editor(brief, sources), 0) > 0]
     priority_candidates = {index: sorted(set(refs) & priority_ids) for index, refs in news_candidates.items()
                            if set(refs) & priority_ids and candidates[index].get('title') not in recent}
+    space_candidates = {
+        i for i in available if space_focus_due and is_space_story(candidates[i])
+        and candidates[i].get('title') not in recent
+        and space_source_ids.intersection(candidates[i].get('source_ids', []))
+    }
     boosted_topics = {row['topic'] for row in preferred_topics}
 
     def editorial_rank(index):
-        return (index not in priority_candidates, index not in news_candidates,
+        return (index not in priority_candidates, index not in space_candidates, index not in news_candidates,
                 not boosted_topics or topic(candidates[index]) not in boosted_topics)
 
     if plan.get('material_shortfall') and available and len(available) == target:
@@ -770,12 +802,13 @@ def _make_plan(run_id):
             "reason": "已安排当前素材可支持且符合岗位配额的选题，其他岗位保留缺口。"}
     else:
         shortlist = list(range(len(candidates)))
-        if news_first and run.trigger == 'release_clock' and target == 1:
-            fresh_choices = [i for i in available if set(news_candidates.get(i, [])) - covered_sources
-                             and candidates[i].get('title') not in recent]
-            if fresh_choices:
-                best = min(map(editorial_rank, fresh_choices))
-                shortlist = [i for i in fresh_choices if editorial_rank(i) == best]
+        if (news_first or space_focus_due) and run.trigger == 'release_clock' and target == 1:
+            preferred = [i for i in available if i in space_candidates
+                         or (set(news_candidates.get(i, [])) - covered_sources
+                             and candidates[i].get('title') not in recent)]
+            if preferred:
+                best = min(map(editorial_rank, preferred))
+                shortlist = [i for i in preferred if editorial_rank(i) == best]
         decision = call_agent(run_id, "director", {"target": target, "production_kind": run.settings_snapshot.get("production_kind", "daily"), "candidates": [candidates[i] for i in shortlist], "recent_titles": recent,
             'recent_news_sources_by_candidate': {idx: news_candidates[i] for idx, i in enumerate(shortlist) if i in news_candidates},
             'priority_news_sources_by_candidate': {idx: priority_candidates[i] for idx, i in enumerate(shortlist) if i in priority_candidates},
@@ -792,7 +825,8 @@ def _make_plan(run_id):
     if len(indices) != target or len(set(indices)) != target or any(type(i) is not int or i < 0 or i >= len(plan["candidates"]) for i in indices):
         raise ValueError("负责人未提交有效且互不重复的生产计划")
     plan = {**plan, 'decision': decision, 'editorial_priority': {
-        'platform': platform, 'priority_candidates': priority_candidates, 'measured_topic_preferences': preferred_topics}}
+        'platform': platform, 'priority_candidates': priority_candidates, 'measured_topic_preferences': preferred_topics,
+        'space_focus_due': space_focus_due, 'space_candidate_indices': sorted(space_candidates)}}
     owners = validate_editor_plan([plan["candidates"][idx] for idx in indices], sources, quotas) if quotas else None
     with SessionLocal() as db:
         db.get(FactoryRun, run_id).plan = plan

@@ -11,6 +11,11 @@ WEEKLY_PAPER_DAYS = (2, 5)  # Wednesday and Saturday in Asia/Shanghai
 WEEKLY_PAPER_TARGET = 2
 EDITOR_IDS = ('producer', 'producer2', 'producer3')
 MANUAL_PLATFORMS = ('xiaohongshu', 'kuaishou')
+SPACE_TOPIC_PATTERN = (
+    r'宇宙|太空|航天|星舰|月球|登月|深空|火星|系外行星|行星候选|空间站|小行星|黑洞|引力波|轨道对接|在轨|旅行者[一二12１２]'
+    r'|\b(?:spacecraft|spaceflight|space station|Starship|Artemis|lunar|Mars|exoplanets?|'
+    r'asteroids?|black holes?|gravitational waves?|deep space|space telescope|orbital docking|Voyager [12])\b'
+)
 
 
 @lru_cache(maxsize=1)
@@ -25,6 +30,10 @@ def editorial_policy():
 def editor_profile(owner):
     names = {'producer': '小影', 'producer2': '小影2', 'producer3': '小影3'}
     return deepcopy(next(row for row in _policy()['tracks'] if row['editor'] == names[owner]))
+
+
+def is_space_story(record):
+    return bool(re.search(SPACE_TOPIC_PATTERN, record.get('title') or '', re.I))
 
 
 def people_context():

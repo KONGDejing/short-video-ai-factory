@@ -4,11 +4,11 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, null
 from sqlalchemy.orm import sessionmaker
 
 from database import Base
-from models.factory import FactoryEvent, FactoryItem, FactoryRun
+from models.factory import FactoryEvent, FactoryItem, FactoryRelease, FactoryRun
 from services import factory_research as research, factory_service as service, factory_visuals as visuals
 
 
@@ -229,6 +229,63 @@ def test_clock_tech_editor_checks_dated_product_news_and_can_choose_ready_altern
         assert item.brief["source_ids"] == ["product-demo"]
 
 
+@pytest.mark.parametrize(("prior_platform", "space_ready", "major", "chosen"), [
+    (None, True, False, "space"),
+    (None, False, False, "demo"),
+    (None, True, True, "demo"),
+    ("kuaishou", True, False, "demo"),
+    ("douyin", True, False, "space"),
+])
+def test_clock_space_focus_prioritizes_verified_new_topics_per_platform(
+        sessions, monkeypatch, prior_platform, space_ready, major, chosen):
+    day = "2026-11-27"
+    space = source("space", title="Voyager 1 reaches a deep space milestone", kind="news",
+                   published_at="2026-11-24", url="https://www.nasa.gov/missions/voyager/fixture/")
+    demo = source("demo", title="Company acquisition" if major else "Product demo",
+                  kind="news", published_at=day, editor_id="producer")
+    run_id = seed(sessions, [demo, space])
+    with sessions() as db:
+        slot = FactoryRelease(due_at=datetime(2026, 11, 27), platforms=["kuaishou"])
+        db.add(slot)
+        db.flush()
+        run = db.get(FactoryRun, run_id)
+        run.trigger = "release_clock"
+        run.settings_snapshot = {**run.settings_snapshot, "production_day": day, "news_first": True,
+                                 "release_slot_ids": [slot.id],
+                                 "editor_quotas": {"producer": 1, "producer2": 0, "producer3": 0}}
+        if prior_platform:
+            prior = FactoryRun(target_count=1, status="completed", active_slot=null())
+            db.add(prior)
+            db.flush()
+            db.add(FactoryItem(run_id=prior.id, position=0, status="completed", brief={
+                "title": "星舰返回时发生了什么", "source_ids": ["prior-launch"],
+                "distribution": {"day": day, "platform": prior_platform},
+            }))
+        db.commit()
+
+    def collect(rows, path, *, limit):
+        if rows[0]["id"] == "space" and not space_ready:
+            return {"status": "insufficient", "assets": []}
+        return {"status": "ready", "assets": [asset(1), asset(2), asset(3)]}
+
+    briefs = [
+        {"title": "产品演示看什么", "freshness": "news", "source_ids": ["demo"]},
+        {"title": "旅行者1号飞进深空", "freshness": "news", "source_ids": ["space"]},
+    ]
+    monkeypatch.setattr(visuals, "collect_visuals", collect)
+    calls = Mock(side_effect=[{"candidates": briefs}, {"selected": [{"candidate_index": 0}]}])
+    monkeypatch.setattr(service, "call_agent", calls)
+
+    service._make_plan(run_id)
+
+    with sessions() as db:
+        item = db.query(FactoryItem).filter_by(run_id=run_id).one()
+        assert item.brief["source_ids"] == [chosen]
+        priority = db.get(FactoryRun, run_id).plan["editorial_priority"]
+        assert priority["space_focus_due"] is (prior_platform != "kuaishou")
+        assert priority["space_candidate_indices"] == ([1] if space_ready and prior_platform != "kuaishou" else [])
+
+
 def test_saved_material_shortfall_plans_ready_editors_without_second_selection(sessions, monkeypatch):
     day = "2026-11-19"
     records = [source("demo"), source("launch"), source("paper")]
@@ -287,7 +344,7 @@ def test_coverage_uses_cited_original_evidence_not_model_tags_or_edge_app_labels
         assert {"大模型", "端侧芯片", "算力基础设施"} <= set(coverage["candidate_gaps"])
         assert {"大模型", "端侧芯片", "算力基础设施"} <= set(coverage["source_gaps"])
         event = db.query(FactoryEvent).filter_by(run_id=run_id, stage="topic_coverage").one()
-        assert len(event.detail["source_topics"]) == 7
+        assert "航天与宇宙" in event.detail["source_topics"]
     assert "每日必须主动检查通用大模型" in calls.call_args_list[0].args[2]["coverage_instruction"]
 
 

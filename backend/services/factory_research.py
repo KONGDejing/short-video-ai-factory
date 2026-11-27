@@ -20,6 +20,7 @@ from xml.etree import ElementTree
 
 import httpx
 
+from services.factory_editorial_policy import is_space_story
 
 FEED_URLS = (
     "https://openai.com/news/rss.xml",
@@ -34,6 +35,11 @@ FEED_URLS = (
     "https://rss.arxiv.org/rss/cs.RO",
     "https://rss.arxiv.org/rss/cs.CL",
     "https://rss.arxiv.org/rss/cs.AI",
+)
+SPACE_FEED_URLS = (
+    "https://www.nasa.gov/feed/",
+    "https://www.nasa.gov/missions/artemis/feed/",
+    "https://www.nasa.gov/centers-and-facilities/jpl/feed/",
 )
 WATCH_PAGES = (
     ("科技贸易：商务部政策解读与公告索引（须打开原文核对日期和适用范围）", "https://www.mofcom.gov.cn/zcjd/"),
@@ -65,6 +71,7 @@ ALLOWED_HOSTS = frozenset({
     "nvidianews.nvidia.com", "blogs.nvidia.com", "about.fb.com", "deepmind.google", "allenai.github.io", "gradium.ai",
     "blogs.microsoft.com", "microsoft.ai", "www.apple.com", "ir.aboutamazon.com",
     "www.amd.com", "ir.spacex.com", "www.spacex.com", "content.spacex.com", "ipo.anthropic.com", "x.com", "investor.sandisk.com", "investors.micron.com", "ir.tesla.com", "x.ai",
+    "www.nasa.gov", "science.nasa.gov",
     "arxiv.org", "rss.arxiv.org", "export.arxiv.org", "www.ces.tech", "ces.tech", "www.mofcom.gov.cn",
     "feeds.bbci.co.uk", "www.bbc.co.uk", "www.bbc.com", "feeds.arstechnica.com", "arstechnica.com",
     "sumo048.github.io", "roboforpc.github.io", "ai4ce.github.io", "weirdlabuw.github.io", "zju3dv.github.io",
@@ -321,7 +328,7 @@ def _load_daily_papers(now):
         return [], f"AI论文发现源暂不可用（{type(exc).__name__}）；不编造热门论文"
 
 
-def collect_sources(limit: int = 12) -> dict:
+def collect_sources(limit: int = 12, *, prefer_space=False, covered_sources=()) -> dict:
     """Return official source excerpts and transparent acquisition warnings.
 
     Output is ``{"sources": [...], "warnings": [...]}``. Source fields are
@@ -334,8 +341,9 @@ def collect_sources(limit: int = 12) -> dict:
     now = _utcnow()
     warnings: list[str] = []
     candidates: list[dict] = []
+    feeds = FEED_URLS + SPACE_FEED_URLS if prefer_space else FEED_URLS
     with ThreadPoolExecutor(max_workers=4) as pool:
-        for records, warning in pool.map(lambda url: _load_feed(url, now), FEED_URLS):
+        for records, warning in pool.map(lambda url: _load_feed(url, now), feeds):
             candidates.extend(records)
             if warning:
                 warnings.append(warning)
@@ -435,6 +443,13 @@ def collect_sources(limit: int = 12) -> dict:
     recent.sort(key=lambda row: (not is_major_event(row), not bool(model_pattern.search(row.get("title", "")))))
     # Major dated company events must not lose all slots to papers/models.
     selected = [row for row in recent if is_major_event(row)][:min(2, discovery_slots)]
+    if prefer_space:
+        # Reserve a small portion of the existing intake budget for space.
+        fresh_space = [row for row in recent if row["kind"] == "news" and row not in selected
+                       and is_space_story(row) and '/image-article/' not in urlsplit(row['url']).path
+                       and hashlib.sha256(row['url'].encode()).hexdigest()[:20] not in covered_sources]
+        fresh_space.sort(key=lambda row: row['published_at'], reverse=True)
+        selected.extend(fresh_space[:min(2, discovery_slots - len(selected))])
     selected.extend(papers[:min(paper_count, discovery_slots - len(selected))])
     selected.extend(r for r in recent if r["url"] not in {p["url"] for p in selected})
     selected = selected[:discovery_slots]
