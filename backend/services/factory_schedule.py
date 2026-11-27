@@ -406,12 +406,15 @@ def retry_clock_production(db, slots, now):
             run.sources, run.plan = [], {}
         else:
             item.status, item.revisions = 'planned', 0
+            if retries and item.error and item.review.get('approved') and not item.media.get('video_path'):
+                item.review = {'approved': False,
+                               'reason': '第一次自动恢复仍未通过制作。按真实原片可以证明的内容重写有画面依托的口播：' + item.error}
         run.settings_snapshot = snapshot
         error = run.error or (item.error if item else None)
         run.status, run.stage, run.active_slot = 'queued', 'queued', 'factory'
         run.error, run.finished_at, run.heartbeat_at, run.task_id = None, None, instant, None
         db.add(FactoryEvent(run_id=run.id, agent_id='director', stage='automatic_production_retry', status='queued',
-            message=f'当天第{retries + 1}次自动恢复原档期' + ('，沿用已审稿件及失败反馈' if item else '，重采资料并优先核验其他候选'),
+            message=f'当天第{retries + 1}次自动恢复原档期' + ('，按失败反馈继续修改' if item else '，重采资料并优先核验其他候选'),
             detail={'release_id': slot.id, 'previous_error': error}))
         try:
             db.commit()

@@ -227,6 +227,23 @@ def test_clock_production_automatically_recovers_same_slot(env, monkeypatch, wit
     assert schedule.plan_production(db, config, now)["status"] == "waiting"
     enqueue.assert_called_once()
 
+    run.status, run.active_slot, run.finished_at = "failed", None, schedule.utc(now)
+    if with_item:
+        item.status = "failed"
+    db.commit()
+    next_retry = now + schedule.CLOCK_RETRY_DELAY
+    assert schedule.plan_production(db, config, next_retry)["automatic_production_retry"] == 2
+    assert enqueue.call_count == 2
+    if with_item:
+        assert not item.review["approved"] and item.error in item.review["reason"]
+
+    run.status, run.active_slot, run.finished_at = "failed", None, schedule.utc(next_retry)
+    if with_item:
+        item.status = "failed"
+    db.commit()
+    assert schedule.plan_production(db, config, next_retry + schedule.CLOCK_RETRY_DELAY)["status"] == "waiting"
+    assert enqueue.call_count == 2
+
 
 
 
